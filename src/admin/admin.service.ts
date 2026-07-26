@@ -4,7 +4,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, MoreThanOrEqual } from 'typeorm';
 import { Client } from '../clients/entities/client.entity';
 import { Company } from '../companies/entities/company.entity';
 import { User } from '../users/entities/user.entity';
@@ -90,6 +90,55 @@ export interface AdminProductResponse {
   updatedAt: Date;
 }
 
+export interface AdminDashboardStats {
+  users: {
+    total: number;
+    clients: number;
+    companies: number;
+    admins: number;
+    active: number;
+    blocked: number;
+  };
+  companies: {
+    total: number;
+    pending: number;
+    approved: number;
+    rejected: number;
+  };
+  products: {
+    total: number;
+    pending: number;
+    approved: number;
+    rejected: number;
+  };
+  catalog: {
+    /** Estimated inventory value = sum(price × stock) for APPROVED products only. Not real sales revenue. */
+    approvedProductValue: number;
+    totalStockUnits: number;
+  };
+  charts: {
+    activityLast7Days: Array<{
+      date: string;
+      label: string;
+      users: number;
+      products: number;
+    }>;
+  };
+  recent: {
+    pendingCompanies: Array<{
+      companyId: string;
+      companyName: string;
+      createdAt: string;
+    }>;
+    pendingProducts: Array<{
+      productId: string;
+      name: string;
+      companyName: string;
+      createdAt: string;
+    }>;
+  };
+}
+
 @Injectable()
 export class AdminService {
   constructor(
@@ -105,6 +154,183 @@ export class AdminService {
     private readonly productsRepository: Repository<Product>,
     private readonly notificationsService: NotificationsService,
   ) {}
+
+  async getDashboardStats(): Promise<AdminDashboardStats> {
+    const [
+      totalUsers,
+      clientUsers,
+      companyUsers,
+      adminUsers,
+      activeUsers,
+      blockedUsers,
+      totalCompanies,
+      pendingCompanies,
+      approvedCompanies,
+      rejectedCompanies,
+      totalProducts,
+      pendingProducts,
+      approvedProducts,
+      rejectedProducts,
+      recentPendingCompanies,
+      recentPendingProducts,
+      approvedCatalog,
+      recentUsers,
+      recentProductsForChart,
+    ] = await Promise.all([
+      this.usersRepository.count(),
+      this.usersRepository.count({ where: { role: Role.CLIENT } }),
+      this.usersRepository.count({ where: { role: Role.COMPANY } }),
+      this.usersRepository.count({ where: { role: Role.ADMIN } }),
+      this.usersRepository.count({ where: { status: UserStatus.ACTIVE } }),
+      this.usersRepository.count({ where: { status: UserStatus.BLOCKED } }),
+      this.companiesRepository.count(),
+      this.companiesRepository.count({
+        where: { verificationStatus: VerificationStatus.PENDING },
+      }),
+      this.companiesRepository.count({
+        where: { verificationStatus: VerificationStatus.APPROVED },
+      }),
+      this.companiesRepository.count({
+        where: { verificationStatus: VerificationStatus.REJECTED },
+      }),
+      this.productsRepository.count(),
+      this.productsRepository.count({
+        where: { verificationStatus: VerificationStatus.PENDING },
+      }),
+      this.productsRepository.count({
+        where: { verificationStatus: VerificationStatus.APPROVED },
+      }),
+      this.productsRepository.count({
+        where: { verificationStatus: VerificationStatus.REJECTED },
+      }),
+      this.companiesRepository.find({
+        where: { verificationStatus: VerificationStatus.PENDING },
+        order: { createdAt: 'DESC' },
+        take: 5,
+      }),
+      this.productsRepository.find({
+        where: { verificationStatus: VerificationStatus.PENDING },
+        relations: { company: true },
+        order: { createdAt: 'DESC' },
+        take: 5,
+      }),
+      this.productsRepository.find({
+        where: { verificationStatus: VerificationStatus.APPROVED },
+        select: { productId: true, price: true, stock: true },
+      }),
+      this.usersRepository.find({
+        where: { createdAt: MoreThanOrEqual(this.daysAgo(6)) },
+        select: { userId: true, createdAt: true },
+      }),
+      this.productsRepository.find({
+        where: { createdAt: MoreThanOrEqual(this.daysAgo(6)) },
+        select: { productId: true, createdAt: true },
+      }),
+    ]);
+
+    const approvedProductValue = approvedCatalog.reduce(
+      (sum, product) => sum + Number(product.price) * Number(product.stock),
+      0,
+    );
+    const totalStockUnits = approvedCatalog.reduce(
+      (sum, product) => sum + Number(product.stock),
+      0,
+    );
+
+    return {
+      users: {
+        total: totalUsers,
+        clients: clientUsers,
+        companies: companyUsers,
+        admins: adminUsers,
+        active: activeUsers,
+        blocked: blockedUsers,
+      },
+      companies: {
+        total: totalCompanies,
+        pending: pendingCompanies,
+        approved: approvedCompanies,
+        rejected: rejectedCompanies,
+      },
+      products: {
+        total: totalProducts,
+        pending: pendingProducts,
+        approved: approvedProducts,
+        rejected: rejectedProducts,
+      },
+      catalog: {
+        approvedProductValue: Math.round(approvedProductValue * 100) / 100,
+        totalStockUnits,
+      },
+      charts: {
+        activityLast7Days: this.buildLast7DaysSeries(
+          recentUsers.map((u) => u.createdAt),
+          recentProductsForChart.map((p) => p.createdAt),
+        ),
+      },
+      recent: {
+        pendingCompanies: recentPendingCompanies.map((company) => ({
+          companyId: company.companyId,
+          companyName: company.companyName,
+          createdAt: company.createdAt.toISOString(),
+        })),
+        pendingProducts: recentPendingProducts.map((product) => ({
+          productId: product.productId,
+          name: product.name,
+          companyName: product.company?.companyName ?? '—',
+          createdAt: product.createdAt.toISOString(),
+        })),
+      },
+    };
+  }
+
+  private daysAgo(days: number) {
+    const date = new Date();
+    date.setHours(0, 0, 0, 0);
+    date.setDate(date.getDate() - days);
+    return date;
+  }
+
+  private buildLast7DaysSeries(userDates: Date[], productDates: Date[]) {
+    const days: Array<{
+      date: string;
+      label: string;
+      users: number;
+      products: number;
+    }> = [];
+
+    for (let i = 6; i >= 0; i -= 1) {
+      const day = new Date();
+      day.setHours(0, 0, 0, 0);
+      day.setDate(day.getDate() - i);
+      const key = day.toISOString().slice(0, 10);
+      days.push({
+        date: key,
+        label: day.toLocaleDateString('fr-FR', {
+          weekday: 'short',
+          day: '2-digit',
+        }),
+        users: 0,
+        products: 0,
+      });
+    }
+
+    const indexByKey = new Map(days.map((day, index) => [day.date, index]));
+
+    for (const createdAt of userDates) {
+      const key = createdAt.toISOString().slice(0, 10);
+      const index = indexByKey.get(key);
+      if (index !== undefined) days[index].users += 1;
+    }
+
+    for (const createdAt of productDates) {
+      const key = createdAt.toISOString().slice(0, 10);
+      const index = indexByKey.get(key);
+      if (index !== undefined) days[index].products += 1;
+    }
+
+    return days;
+  }
 
   async findAllUsers(): Promise<AdminUserResponse[]> {
     const users = await this.usersRepository.find({

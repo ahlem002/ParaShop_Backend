@@ -23,6 +23,11 @@ import { UpdateProductVerificationDto } from './dto/update-product-verification.
 export class AdminController {
   constructor(private readonly adminService: AdminService) {}
 
+  @Get('dashboard')
+  getDashboard() {
+    return this.adminService.getDashboardStats();
+  }
+
   @Get('users')
   getUsers() {
     return this.adminService.findAllUsers();
