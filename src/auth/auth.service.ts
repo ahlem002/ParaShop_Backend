@@ -27,6 +27,9 @@ import {
   VerifyTwoFactorLoginDto,
 } from './dto/security.dto';
 import { JwtPayload } from './interfaces/jwt-payload.interface';
+import { NotificationsService } from '../notifications/notifications.service';
+import { NotificationType } from '../notifications/notification-type.enum';
+import { MailService } from '../mail/mail.service';
 
 export interface AuthUserResponse {
   userId: string;
@@ -78,6 +81,8 @@ export class AuthService {
     private readonly companiesRepository: Repository<Company>,
     private readonly jwtService: JwtService,
     private readonly dataSource: DataSource,
+    private readonly notificationsService: NotificationsService,
+    private readonly mailService: MailService,
   ) {}
 
   async registerClient(dto: RegisterClientDto): Promise<AuthResponse> {
@@ -126,7 +131,7 @@ export class AuthService {
   async registerCompany(dto: RegisterCompanyDto): Promise<AuthResponse> {
     const normalizedEmail = this.normalizeEmail(dto.email);
 
-    return this.dataSource.transaction(async (manager) => {
+    const result = await this.dataSource.transaction(async (manager) => {
       const usersRepository = manager.getRepository(User);
       const companiesRepository = manager.getRepository(Company);
 
@@ -163,18 +168,39 @@ export class AuthService {
         verificationStatus: VerificationStatus.PENDING,
       });
 
-      await companiesRepository.save(company);
+      const savedCompany = await companiesRepository.save(company);
 
       const fullUser = await usersRepository.findOne({
         where: { userId: savedUser.userId },
         relations: { company: true },
       });
 
-      return this.buildAuthResponse(
-        fullUser ?? savedUser,
-        VerificationStatus.PENDING,
-      );
+      return {
+        auth: this.buildAuthResponse(
+          fullUser ?? savedUser,
+          VerificationStatus.PENDING,
+        ),
+        companyId: savedCompany.companyId,
+        companyName: savedCompany.companyName,
+      };
     });
+
+    void this.notificationsService.notifyAdmins({
+      type: NotificationType.COMPANY_PENDING,
+      title: 'New company registration',
+      message: `${result.companyName} has registered and awaits verification.`,
+      link: '/admin/validations',
+      relatedId: result.companyId,
+    });
+
+    void this.mailService.sendNotificationEmail({
+      to: normalizedEmail,
+      title: 'Thank you for registering with ParaShop+',
+      message: `Hi ${dto.firstName}, thank you for creating a company account for ${result.companyName}. Your registration is pending admin approval. We appreciate your patience — you will be able to access the company panel once an administrator verifies your account.`,
+      link: '/company/pending',
+    });
+
+    return result.auth;
   }
 
   async login(dto: LoginDto): Promise<LoginResult> {

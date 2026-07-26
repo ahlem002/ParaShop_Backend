@@ -17,6 +17,8 @@ import { ApprovalDecision } from '../common/enums/approval-decision.enum';
 import { UpdateUserStatusDto } from './dto/update-user-status.dto';
 import { UpdateCompanyVerificationDto } from './dto/update-company-verification.dto';
 import { UpdateProductVerificationDto } from './dto/update-product-verification.dto';
+import { NotificationsService } from '../notifications/notifications.service';
+import { NotificationType } from '../notifications/notification-type.enum';
 
 export interface AdminUserResponse {
   userId: string;
@@ -101,6 +103,7 @@ export class AdminService {
     private readonly approvalsRepository: Repository<AdminApproval>,
     @InjectRepository(Product)
     private readonly productsRepository: Repository<Product>,
+    private readonly notificationsService: NotificationsService,
   ) {}
 
   async findAllUsers(): Promise<AdminUserResponse[]> {
@@ -240,6 +243,26 @@ export class AdminService {
     }
 
     await this.productsRepository.save(product);
+
+    const companyUserId = product.company?.userId;
+    if (companyUserId) {
+      const approved = dto.decision === ApprovalDecision.APPROVED;
+      void this.notificationsService.createForUser({
+        userId: companyUserId,
+        type: approved
+          ? NotificationType.PRODUCT_APPROVED
+          : NotificationType.PRODUCT_REJECTED,
+        title: approved ? 'Product approved' : 'Product rejected',
+        message: approved
+          ? `Your product "${product.name}" has been approved and is now visible.`
+          : `Your product "${product.name}" was rejected${
+              product.rejectionReason ? `: ${product.rejectionReason}` : '.'
+            }`,
+        link: '/company/products',
+        relatedId: product.productId,
+      });
+    }
+
     return this.toProductResponse(product);
   }
 

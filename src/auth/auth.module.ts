@@ -9,6 +9,8 @@ import { Company } from '../companies/entities/company.entity';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { JwtStrategy } from './strategies/jwt.strategy';
+import { NotificationsModule } from '../notifications/notifications.module';
+import { MailModule } from '../mail/mail.module';
 
 @Module({
   imports: [
@@ -24,6 +26,8 @@ import { JwtStrategy } from './strategies/jwt.strategy';
         },
       }),
     }),
+    NotificationsModule,
+    MailModule,
   ],
   controllers: [AuthController],
   providers: [AuthService, JwtStrategy],

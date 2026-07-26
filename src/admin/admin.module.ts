@@ -8,10 +8,12 @@ import { Product } from '../products/entities/product.entity';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { AdminController } from './admin.controller';
 import { AdminService } from './admin.service';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([Client, Company, User, AdminApproval, Product]),
+    NotificationsModule,
   ],
   controllers: [AdminController],
   providers: [AdminService, RolesGuard],

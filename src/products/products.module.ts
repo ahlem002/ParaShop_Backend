@@ -8,9 +8,13 @@ import { ApprovedCompanyGuard } from '../auth/guards/approved-company.guard';
 import { ProductsController } from './products.controller';
 import { PublicProductsController } from './public-products.controller';
 import { ProductsService } from './products.service';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Product, Company, Category])],
+  imports: [
+    TypeOrmModule.forFeature([Product, Company, Category]),
+    NotificationsModule,
+  ],
   controllers: [ProductsController, PublicProductsController],
   providers: [ProductsService, RolesGuard, ApprovedCompanyGuard],
   exports: [ProductsService],

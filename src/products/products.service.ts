@@ -11,6 +11,8 @@ import { Category } from '../categories/entities/category.entity';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import { VerificationStatus } from '../common/enums/verification-status.enum';
+import { NotificationsService } from '../notifications/notifications.service';
+import { NotificationType } from '../notifications/notification-type.enum';
 
 @Injectable()
 export class ProductsService {
@@ -21,6 +23,7 @@ export class ProductsService {
     private readonly companiesRepository: Repository<Company>,
     @InjectRepository(Category)
     private readonly categoriesRepository: Repository<Category>,
+    private readonly notificationsService: NotificationsService,
   ) {}
 
   async findApprovedPublic() {
@@ -90,6 +93,15 @@ export class ProductsService {
     });
 
     const saved = await this.productsRepository.save(product);
+
+    void this.notificationsService.notifyAdmins({
+      type: NotificationType.PRODUCT_PENDING,
+      title: 'Product awaiting validation',
+      message: `${company.companyName} submitted "${saved.name}" for review.`,
+      link: '/admin/product-validations',
+      relatedId: saved.productId,
+    });
+
     return this.findOneForCompany(saved.productId, userId);
   }
 
@@ -129,6 +141,15 @@ export class ProductsService {
     product.rejectionReason = null;
 
     await this.productsRepository.save(product);
+
+    void this.notificationsService.notifyAdmins({
+      type: NotificationType.PRODUCT_PENDING,
+      title: 'Product awaiting validation',
+      message: `${company.companyName} updated "${product.name}" and needs review.`,
+      link: '/admin/product-validations',
+      relatedId: product.productId,
+    });
+
     return this.findOneForCompany(productId, userId);
   }
 

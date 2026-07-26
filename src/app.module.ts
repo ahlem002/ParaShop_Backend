@@ -15,6 +15,9 @@ import { Company } from './companies/entities/company.entity';
 import { Category } from './categories/entities/category.entity';
 import { AdminApproval } from './admin-approvals/entities/admin-approval.entity';
 import { Product } from './products/entities/product.entity';
+import { Notification } from './notifications/entities/notification.entity';
+import { NotificationsModule } from './notifications/notifications.module';
+import { MailModule } from './mail/mail.module';
 
 @Module({
   imports: [
@@ -30,7 +33,7 @@ import { Product } from './products/entities/product.entity';
   password: configService.get<string>('DB_PASSWORD'),
   database: configService.get<string>('DB_DATABASE'),
 
-  entities: [User, Client, Company, Category, AdminApproval, Product],
+  entities: [User, Client, Company, Category, AdminApproval, Product, Notification],
 
   synchronize: configService.get<string>('DB_SYNC') === 'true',
 
@@ -45,6 +48,8 @@ import { Product } from './products/entities/product.entity';
     AdminModule,
     CategoriesModule,
     ProductsModule,
+    NotificationsModule,
+    MailModule,
   ],
   controllers: [AppController],
   providers: [AppService],
