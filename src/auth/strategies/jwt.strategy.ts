@@ -14,8 +14,8 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     });
   }
 
-  validate(payload: JwtPayload): JwtPayload {
-    if (!payload?.sub) {
+  validate(payload: JwtPayload & { purpose?: string }): JwtPayload {
+    if (!payload?.sub || payload.purpose === '2fa') {
       throw new UnauthorizedException();
     }
 

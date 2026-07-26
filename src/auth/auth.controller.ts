@@ -19,6 +19,12 @@ import { RegisterClientDto } from './dto/register-client.dto';
 import { RegisterCompanyDto } from './dto/register-company.dto';
 import { LoginDto } from './dto/login.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
+import {
+  ChangePasswordDto,
+  DisableTwoFactorDto,
+  TwoFactorCodeDto,
+  VerifyTwoFactorLoginDto,
+} from './dto/security.dto';
 import { CurrentUser } from './decorators/current-user.decorator';
 import type { JwtPayload } from './interfaces/jwt-payload.interface';
 
@@ -83,6 +89,11 @@ export class AuthController {
     return this.authService.login(dto);
   }
 
+  @Post('2fa/verify-login')
+  verifyTwoFactorLogin(@Body() dto: VerifyTwoFactorLoginDto) {
+    return this.authService.verifyTwoFactorLogin(dto);
+  }
+
   @Get('me')
   @UseGuards(AuthGuard('jwt'))
   getProfile(@CurrentUser() user: JwtPayload) {
@@ -128,5 +139,38 @@ export class AuthController {
         ? `/uploads/profiles/${profileImageFile.filename}`
         : undefined,
     );
+  }
+
+  @Post('change-password')
+  @UseGuards(AuthGuard('jwt'))
+  changePassword(
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: ChangePasswordDto,
+  ) {
+    return this.authService.changePassword(user.sub, dto);
+  }
+
+  @Post('2fa/setup')
+  @UseGuards(AuthGuard('jwt'))
+  setupTwoFactor(@CurrentUser() user: JwtPayload) {
+    return this.authService.setupTwoFactor(user.sub);
+  }
+
+  @Post('2fa/enable')
+  @UseGuards(AuthGuard('jwt'))
+  enableTwoFactor(
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: TwoFactorCodeDto,
+  ) {
+    return this.authService.enableTwoFactor(user.sub, dto);
+  }
+
+  @Post('2fa/disable')
+  @UseGuards(AuthGuard('jwt'))
+  disableTwoFactor(
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: DisableTwoFactorDto,
+  ) {
+    return this.authService.disableTwoFactor(user.sub, dto);
   }
 }

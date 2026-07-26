@@ -40,6 +40,12 @@ export class User {
   @Column({ type: 'varchar', length: 500, nullable: true })
   profileImage: string | null;
 
+  @Column({ type: 'boolean', default: false })
+  twoFactorEnabled: boolean;
+
+  @Column({ type: 'varchar', length: 255, nullable: true })
+  twoFactorSecret: string | null;
+
   @Column({ type: 'enum', enum: Role })
   role: Role;
 
