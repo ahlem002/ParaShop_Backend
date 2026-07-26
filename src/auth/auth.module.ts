@@ -20,7 +20,7 @@ import { JwtStrategy } from './strategies/jwt.strategy';
       useFactory: (configService: ConfigService) => ({
         secret: configService.get<string>('JWT_SECRET', 'parashop-dev-secret'),
         signOptions: {
-          expiresIn: '7d',
+          expiresIn: configService.get<string>('JWT_EXPIRES_IN', '1d'),
         },
       }),
     }),

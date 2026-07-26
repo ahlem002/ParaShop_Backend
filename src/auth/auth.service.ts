@@ -17,6 +17,7 @@ import { VerificationStatus } from '../common/enums/verification-status.enum';
 import { RegisterClientDto } from './dto/register-client.dto';
 import { RegisterCompanyDto } from './dto/register-company.dto';
 import { LoginDto } from './dto/login.dto';
+import { UpdateProfileDto } from './dto/update-profile.dto';
 import { JwtPayload } from './interfaces/jwt-payload.interface';
 
 export interface AuthUserResponse {
@@ -24,8 +25,24 @@ export interface AuthUserResponse {
   firstName: string;
   lastName: string;
   email: string;
+  phoneNumber: string | null;
+  birthDate: string | null;
+  gender: string | null;
   role: Role;
   companyVerificationStatus: VerificationStatus | null;
+  address: string | null;
+  profileImage: string | null;
+  createdAt: string | null;
+  company: {
+    companyId: string;
+    companyName: string;
+    companyType: string;
+    establishmentDate: string;
+    description: string | null;
+    phoneNumber: string | null;
+    email: string;
+    proofDocument: string | null;
+  } | null;
 }
 
 export interface AuthResponse {
@@ -80,7 +97,12 @@ export class AuthService {
 
       await clientsRepository.save(client);
 
-      return this.buildAuthResponse(savedUser, null);
+      const fullUser = await usersRepository.findOne({
+        where: { userId: savedUser.userId },
+        relations: { client: true },
+      });
+
+      return this.buildAuthResponse(fullUser ?? savedUser, null);
     });
   }
 
@@ -124,7 +146,15 @@ export class AuthService {
 
       await companiesRepository.save(company);
 
-      return this.buildAuthResponse(savedUser, VerificationStatus.PENDING);
+      const fullUser = await usersRepository.findOne({
+        where: { userId: savedUser.userId },
+        relations: { company: true },
+      });
+
+      return this.buildAuthResponse(
+        fullUser ?? savedUser,
+        VerificationStatus.PENDING,
+      );
     });
   }
 
@@ -133,7 +163,7 @@ export class AuthService {
 
     const user = await this.usersRepository.findOne({
       where: { email: normalizedEmail },
-      relations: { company: true },
+      relations: { company: true, client: true },
     });
 
     if (!user) {
@@ -156,16 +186,94 @@ export class AuthService {
   }
 
   async getProfile(userId: string): Promise<AuthUserResponse> {
+    const user = await this.loadUserWithRelations(userId);
+    return this.toAuthUser(user, user.company?.verificationStatus ?? null);
+  }
+
+  async updateProfile(
+    userId: string,
+    dto: UpdateProfileDto,
+    profileImage?: string | null,
+  ): Promise<AuthUserResponse> {
+    const user = await this.loadUserWithRelations(userId);
+
+    if (dto.firstName !== undefined) user.firstName = dto.firstName.trim();
+    if (dto.lastName !== undefined) user.lastName = dto.lastName.trim();
+    if (dto.phoneNumber !== undefined) {
+      user.phoneNumber = dto.phoneNumber.trim() || null;
+    }
+
+    if (user.role === Role.CLIENT || user.role === Role.ADMIN) {
+      if (dto.birthDate !== undefined) {
+        user.birthDate = dto.birthDate || null;
+      }
+      if (dto.gender !== undefined) {
+        user.gender = dto.gender || null;
+      }
+    }
+
+    await this.usersRepository.save(user);
+
+    if (profileImage !== undefined) {
+      await this.usersRepository.update(
+        { userId },
+        { profileImage },
+      );
+      user.profileImage = profileImage;
+    }
+
+    if (user.role === Role.CLIENT || user.role === Role.ADMIN) {
+      let client = user.client;
+      if (!client) {
+        client = this.clientsRepository.create({ userId: user.userId });
+      }
+
+      if (dto.address !== undefined) {
+        client.address = dto.address.trim() || null;
+      }
+      if (profileImage !== undefined) {
+        client.profileImage = profileImage;
+      }
+
+      await this.clientsRepository.save(client);
+      user.client = client;
+    }
+
+    if (user.role === Role.COMPANY && user.company) {
+      if (dto.companyName !== undefined) {
+        user.company.companyName = dto.companyName.trim();
+      }
+      if (dto.description !== undefined) {
+        user.company.description = dto.description.trim() || null;
+      }
+      if (dto.address !== undefined) {
+        user.company.address = dto.address.trim() || null;
+      }
+      if (dto.companyPhoneNumber !== undefined) {
+        user.company.phoneNumber = dto.companyPhoneNumber.trim() || null;
+      }
+
+      await this.companiesRepository.save(user.company);
+    }
+
+    const refreshed = await this.loadUserWithRelations(userId);
+    return this.toAuthUser(
+      refreshed,
+      refreshed.company?.verificationStatus ?? null,
+    );
+  }
+
+  private async loadUserWithRelations(userId: string) {
     const user = await this.usersRepository.findOne({
       where: { userId },
-      relations: { company: true },
+      relations: { company: true, client: true },
     });
 
     if (!user) {
       throw new UnauthorizedException();
     }
 
-    return this.toAuthUser(user, user.company?.verificationStatus ?? null);
+    return user;
   }
 
   private async ensureEmailIsAvailable(
@@ -211,8 +319,44 @@ export class AuthService {
       firstName: user.firstName,
       lastName: user.lastName,
       email: user.email,
+      phoneNumber: user.phoneNumber,
+      birthDate: this.formatDateOnly(user.birthDate),
+      gender: user.gender,
       role: user.role,
       companyVerificationStatus,
+      address:
+        user.role === Role.COMPANY
+          ? (user.company?.address ?? null)
+          : (user.client?.address ?? null),
+      profileImage: user.profileImage ?? user.client?.profileImage ?? null,
+      createdAt: user.createdAt
+        ? new Date(user.createdAt).toISOString()
+        : null,
+      company: user.company
+        ? {
+            companyId: user.company.companyId,
+            companyName: user.company.companyName,
+            companyType: user.company.companyType,
+            establishmentDate:
+              this.formatDateOnly(user.company.establishmentDate) ??
+              user.company.establishmentDate,
+            description: user.company.description,
+            phoneNumber: user.company.phoneNumber,
+            email: user.company.email,
+            proofDocument: user.company.proofDocument,
+          }
+        : null,
     };
+  }
+
+  private formatDateOnly(value: string | Date | null | undefined): string | null {
+    if (!value) return null;
+    if (typeof value === 'string') {
+      return value.slice(0, 10);
+    }
+    const year = value.getFullYear();
+    const month = String(value.getMonth() + 1).padStart(2, '0');
+    const day = String(value.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
   }
 }
