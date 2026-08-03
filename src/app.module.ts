@@ -9,6 +9,7 @@ import { AuthModule } from './auth/auth.module';
 import { AdminModule } from './admin/admin.module';
 import { CategoriesModule } from './categories/categories.module';
 import { ProductsModule } from './products/products.module';
+import { CartModule } from './cart/cart.module';
 import { User } from './users/entities/user.entity';
 import { Client } from './clients/entities/client.entity';
 import { Company } from './companies/entities/company.entity';
@@ -16,6 +17,7 @@ import { Category } from './categories/entities/category.entity';
 import { AdminApproval } from './admin-approvals/entities/admin-approval.entity';
 import { Product } from './products/entities/product.entity';
 import { Notification } from './notifications/entities/notification.entity';
+import { CartItem } from './cart/entities/cart-item.entity';
 import { NotificationsModule } from './notifications/notifications.module';
 import { MailModule } from './mail/mail.module';
 
@@ -33,7 +35,16 @@ import { MailModule } from './mail/mail.module';
   password: configService.get<string>('DB_PASSWORD'),
   database: configService.get<string>('DB_DATABASE'),
 
-  entities: [User, Client, Company, Category, AdminApproval, Product, Notification],
+  entities: [
+    User,
+    Client,
+    Company,
+    Category,
+    AdminApproval,
+    Product,
+    Notification,
+    CartItem,
+  ],
 
   synchronize: configService.get<string>('DB_SYNC') === 'true',
 
@@ -48,6 +59,7 @@ import { MailModule } from './mail/mail.module';
     AdminModule,
     CategoriesModule,
     ProductsModule,
+    CartModule,
     NotificationsModule,
     MailModule,
   ],

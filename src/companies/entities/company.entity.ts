@@ -42,6 +42,10 @@ export class Company {
   @Column({ type: 'varchar', length: 255 })
   email: string;
 
+  /** Flat delivery fee in TND set by the company (added at checkout). */
+  @Column({ type: 'decimal', precision: 10, scale: 2, default: 0 })
+  deliveryFee: number;
+
   @Column({ type: 'varchar', length: 500, nullable: true })
   proofDocument: string | null;
 
