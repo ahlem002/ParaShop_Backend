@@ -23,8 +23,10 @@ import { CartItem } from './cart/entities/cart-item.entity';
 import { Order } from './orders/entities/order.entity';
 import { OrderItem } from './orders/entities/order-item.entity';
 import { ActivityLog } from './activity/entities/activity-log.entity';
+import { Favorite } from './favorites/entities/favorite.entity';
 import { NotificationsModule } from './notifications/notifications.module';
 import { MailModule } from './mail/mail.module';
+import { FavoritesModule } from './favorites/favorites.module';
 
 @Module({
   imports: [
@@ -52,6 +54,7 @@ import { MailModule } from './mail/mail.module';
     Order,
     OrderItem,
     ActivityLog,
+    Favorite,
   ],
 
   synchronize: configService.get<string>('DB_SYNC') === 'true',
@@ -70,6 +73,7 @@ import { MailModule } from './mail/mail.module';
     CartModule,
     OrdersModule,
     ActivityModule,
+    FavoritesModule,
     NotificationsModule,
     MailModule,
   ],

@@ -201,6 +201,8 @@ export class OrdersService {
       order: { createdAt: 'DESC' },
     });
 
+    await this.backfillMissingItemImages(orders.flatMap((o) => o.items ?? []));
+
     return orders.map((order) => this.toOrderView(order));
   }
 
@@ -215,7 +217,58 @@ export class OrdersService {
       throw new NotFoundException('Order not found');
     }
 
+    await this.backfillMissingItemImages(order.items ?? []);
+
     return this.toOrderView(order);
+  }
+
+  /** Normalize product image list from entity / JSON quirks */
+  private firstProductImage(
+    images: string[] | string | null | undefined,
+  ): string | null {
+    if (!images) return null;
+
+    let list: unknown = images;
+    if (typeof images === 'string') {
+      try {
+        list = JSON.parse(images);
+      } catch {
+        const trimmed = images.trim();
+        return trimmed || null;
+      }
+    }
+
+    if (!Array.isArray(list) || list.length === 0) return null;
+    const first = list[0];
+    return typeof first === 'string' && first.trim() ? first.trim() : null;
+  }
+
+  private resolveItemImage(item: OrderItem): string | null {
+    if (item.productImage?.trim()) {
+      return item.productImage.trim();
+    }
+    return this.firstProductImage(item.product?.images);
+  }
+
+  /** Persist missing snapshots so older orders show the same images as cart */
+  private async backfillMissingItemImages(items: OrderItem[]) {
+    const toSave: OrderItem[] = [];
+
+    for (const item of items) {
+      if (item.productImage?.trim()) continue;
+      const image = this.firstProductImage(item.product?.images);
+      if (!image) continue;
+      item.productImage = image;
+      toSave.push(item);
+    }
+
+    if (!toSave.length) return;
+
+    try {
+      await this.orderItemsRepository.save(toSave);
+    } catch {
+      // Column may not exist yet if DB wasn't synced; still return images in API
+    }
   }
 
   async deleteMyOrder(userId: string, orderId: string) {
@@ -303,6 +356,8 @@ export class OrdersService {
       where: { orderId: order.orderId },
       relations: { company: true, items: { product: true } },
     });
+
+    await this.backfillMissingItemImages(refreshed?.items ?? []);
 
     await this.activityService.log({
       userId,
@@ -537,8 +592,7 @@ export class OrdersService {
         orderItemId: item.orderItemId,
         productId: item.productId,
         productName: item.productName,
-        productImage:
-          item.productImage ?? item.product?.images?.[0] ?? null,
+        productImage: this.resolveItemImage(item),
         unitPrice: Number(item.unitPrice),
         quantity: item.quantity,
         lineTotal: Number(item.lineTotal),
