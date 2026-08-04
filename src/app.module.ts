@@ -27,6 +27,7 @@ import { Favorite } from './favorites/entities/favorite.entity';
 import { NotificationsModule } from './notifications/notifications.module';
 import { MailModule } from './mail/mail.module';
 import { FavoritesModule } from './favorites/favorites.module';
+import { CompanyStatsModule } from './company-stats/company-stats.module';
 
 @Module({
   imports: [
@@ -74,6 +75,7 @@ import { FavoritesModule } from './favorites/favorites.module';
     OrdersModule,
     ActivityModule,
     FavoritesModule,
+    CompanyStatsModule,
     NotificationsModule,
     MailModule,
   ],
