@@ -8,7 +8,9 @@ import { Repository } from 'typeorm';
 import { CartItem } from './entities/cart-item.entity';
 import { Client } from '../clients/entities/client.entity';
 import { Product } from '../products/entities/product.entity';
+import { ActivityType } from '../common/enums/activity-type.enum';
 import { VerificationStatus } from '../common/enums/verification-status.enum';
+import { ActivityService } from '../activity/activity.service';
 import { AddCartItemDto } from './dto/add-cart-item.dto';
 import { UpdateCartItemDto } from './dto/update-cart-item.dto';
 
@@ -21,6 +23,7 @@ export class CartService {
     private readonly clientsRepository: Repository<Client>,
     @InjectRepository(Product)
     private readonly productsRepository: Repository<Product>,
+    private readonly activityService: ActivityService,
   ) {}
 
   async getCart(userId: string) {
@@ -64,6 +67,20 @@ export class CartService {
     }
 
     await this.cartItemsRepository.save(item);
+
+    await this.activityService.log({
+      userId,
+      type: ActivityType.CART_ITEM_ADDED,
+      title: 'Added to cart',
+      message: `Added ${dto.quantity} × ${product.name} to your cart`,
+      metadata: {
+        productId: product.productId,
+        productName: product.name,
+        quantity: dto.quantity,
+        companyId: product.companyId,
+      },
+    });
+
     return this.getCart(userId);
   }
 
@@ -84,8 +101,24 @@ export class CartService {
       );
     }
 
+    const previousQuantity = item.quantity;
     item.quantity = dto.quantity;
     await this.cartItemsRepository.save(item);
+
+    await this.activityService.log({
+      userId,
+      type: ActivityType.CART_ITEM_UPDATED,
+      title: 'Cart updated',
+      message: `Updated ${item.product.name} quantity from ${previousQuantity} to ${dto.quantity}`,
+      metadata: {
+        cartItemId,
+        productId: item.product.productId,
+        productName: item.product.name,
+        previousQuantity,
+        quantity: dto.quantity,
+      },
+    });
+
     return this.getCart(userId);
   }
 
@@ -93,19 +126,48 @@ export class CartService {
     const client = await this.getClientForUser(userId);
     const item = await this.cartItemsRepository.findOne({
       where: { cartItemId, clientId: client.clientId },
+      relations: { product: true },
     });
 
     if (!item) {
       throw new NotFoundException('Cart item not found');
     }
 
+    const productName = item.product?.name ?? 'a product';
+    const productId = item.productId;
+    const quantity = item.quantity;
+
     await this.cartItemsRepository.remove(item);
+
+    await this.activityService.log({
+      userId,
+      type: ActivityType.CART_ITEM_REMOVED,
+      title: 'Removed from cart',
+      message: `Removed ${productName} from your cart`,
+      metadata: { cartItemId, productId, productName, quantity },
+    });
+
     return this.getCart(userId);
   }
 
   async clear(userId: string) {
     const client = await this.getClientForUser(userId);
+    const count = await this.cartItemsRepository.count({
+      where: { clientId: client.clientId },
+    });
     await this.cartItemsRepository.delete({ clientId: client.clientId });
+
+    await this.activityService.log({
+      userId,
+      type: ActivityType.CART_CLEARED,
+      title: 'Cart cleared',
+      message:
+        count > 0
+          ? `Cleared ${count} item(s) from your cart`
+          : 'Cleared your cart',
+      metadata: { itemCount: count },
+    });
+
     return this.getCart(userId);
   }
 
@@ -113,13 +175,28 @@ export class CartService {
     const client = await this.getClientForUser(userId);
     const items = await this.cartItemsRepository.find({
       where: { clientId: client.clientId },
-      relations: { product: true },
+      relations: { product: { company: true } },
     });
 
     const toRemove = items.filter((item) => item.product.companyId === companyId);
+    const companyName =
+      toRemove[0]?.product?.company?.companyName ?? 'company';
+
     if (toRemove.length) {
       await this.cartItemsRepository.remove(toRemove);
     }
+
+    await this.activityService.log({
+      userId,
+      type: ActivityType.CART_COMPANY_CLEARED,
+      title: 'Company cart cleared',
+      message: `Removed ${toRemove.length} item(s) from ${companyName}`,
+      metadata: {
+        companyId,
+        companyName,
+        itemCount: toRemove.length,
+      },
+    });
 
     return this.getCart(userId);
   }

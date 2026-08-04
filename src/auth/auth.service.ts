@@ -30,6 +30,8 @@ import { JwtPayload } from './interfaces/jwt-payload.interface';
 import { NotificationsService } from '../notifications/notifications.service';
 import { NotificationType } from '../notifications/notification-type.enum';
 import { MailService } from '../mail/mail.service';
+import { ActivityService } from '../activity/activity.service';
+import { ActivityType } from '../common/enums/activity-type.enum';
 
 export interface AuthUserResponse {
   userId: string;
@@ -83,6 +85,7 @@ export class AuthService {
     private readonly dataSource: DataSource,
     private readonly notificationsService: NotificationsService,
     private readonly mailService: MailService,
+    private readonly activityService: ActivityService,
   ) {}
 
   async registerClient(dto: RegisterClientDto): Promise<AuthResponse> {
@@ -236,10 +239,19 @@ export class AuthService {
       return { requiresTwoFactor: true, tempToken };
     }
 
-    return this.buildAuthResponse(
+    const auth = this.buildAuthResponse(
       user,
       user.company?.verificationStatus ?? null,
     );
+
+    await this.activityService.log({
+      userId: user.userId,
+      type: ActivityType.LOGIN,
+      title: 'Signed in',
+      message: 'You signed in to your account',
+    });
+
+    return auth;
   }
 
   async verifyTwoFactorLogin(
@@ -270,10 +282,19 @@ export class AuthService {
       throw new UnauthorizedException('Invalid authentication code');
     }
 
-    return this.buildAuthResponse(
+    const auth = this.buildAuthResponse(
       user,
       user.company?.verificationStatus ?? null,
     );
+
+    await this.activityService.log({
+      userId: user.userId,
+      type: ActivityType.LOGIN,
+      title: 'Signed in',
+      message: 'You signed in with two-factor authentication',
+    });
+
+    return auth;
   }
 
   async changePassword(userId: string, dto: ChangePasswordDto) {
@@ -298,6 +319,13 @@ export class AuthService {
 
     user.passwordHash = await bcrypt.hash(dto.newPassword, this.saltRounds);
     await this.usersRepository.save(user);
+
+    await this.activityService.log({
+      userId,
+      type: ActivityType.PASSWORD_CHANGED,
+      title: 'Password changed',
+      message: 'Your account password was updated',
+    });
 
     return { message: 'Password updated successfully' };
   }
@@ -350,6 +378,13 @@ export class AuthService {
     user.twoFactorEnabled = true;
     await this.usersRepository.save(user);
 
+    await this.activityService.log({
+      userId,
+      type: ActivityType.TWO_FACTOR_ENABLED,
+      title: '2FA enabled',
+      message: 'Two-factor authentication was enabled on your account',
+    });
+
     return this.getProfile(userId);
   }
 
@@ -373,6 +408,13 @@ export class AuthService {
     user.twoFactorEnabled = false;
     user.twoFactorSecret = null;
     await this.usersRepository.save(user);
+
+    await this.activityService.log({
+      userId,
+      type: ActivityType.TWO_FACTOR_DISABLED,
+      title: '2FA disabled',
+      message: 'Two-factor authentication was disabled on your account',
+    });
 
     return this.getProfile(userId);
   }
@@ -444,6 +486,21 @@ export class AuthService {
 
       await this.companiesRepository.save(user.company);
     }
+
+    await this.activityService.log({
+      userId,
+      type: ActivityType.PROFILE_UPDATED,
+      title: 'Profile updated',
+      message: profileImage
+        ? 'You updated your profile details and photo'
+        : 'You updated your profile details',
+      metadata: {
+        fields: Object.keys(dto).filter(
+          (key) => (dto as Record<string, unknown>)[key] !== undefined,
+        ),
+        profileImageChanged: profileImage !== undefined,
+      },
+    });
 
     const refreshed = await this.loadUserWithRelations(userId);
     return this.toAuthUser(

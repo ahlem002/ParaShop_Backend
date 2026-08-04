@@ -11,6 +11,7 @@ import { AuthService } from './auth.service';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { MailModule } from '../mail/mail.module';
+import { ActivityModule } from '../activity/activity.module';
 
 @Module({
   imports: [
@@ -28,6 +29,7 @@ import { MailModule } from '../mail/mail.module';
     }),
     NotificationsModule,
     MailModule,
+    ActivityModule,
   ],
   controllers: [AuthController],
   providers: [AuthService, JwtStrategy],

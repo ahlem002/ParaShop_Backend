@@ -10,6 +10,8 @@ import { AdminModule } from './admin/admin.module';
 import { CategoriesModule } from './categories/categories.module';
 import { ProductsModule } from './products/products.module';
 import { CartModule } from './cart/cart.module';
+import { OrdersModule } from './orders/orders.module';
+import { ActivityModule } from './activity/activity.module';
 import { User } from './users/entities/user.entity';
 import { Client } from './clients/entities/client.entity';
 import { Company } from './companies/entities/company.entity';
@@ -18,6 +20,9 @@ import { AdminApproval } from './admin-approvals/entities/admin-approval.entity'
 import { Product } from './products/entities/product.entity';
 import { Notification } from './notifications/entities/notification.entity';
 import { CartItem } from './cart/entities/cart-item.entity';
+import { Order } from './orders/entities/order.entity';
+import { OrderItem } from './orders/entities/order-item.entity';
+import { ActivityLog } from './activity/entities/activity-log.entity';
 import { NotificationsModule } from './notifications/notifications.module';
 import { MailModule } from './mail/mail.module';
 
@@ -44,6 +49,9 @@ import { MailModule } from './mail/mail.module';
     Product,
     Notification,
     CartItem,
+    Order,
+    OrderItem,
+    ActivityLog,
   ],
 
   synchronize: configService.get<string>('DB_SYNC') === 'true',
@@ -60,6 +68,8 @@ import { MailModule } from './mail/mail.module';
     CategoriesModule,
     ProductsModule,
     CartModule,
+    OrdersModule,
+    ActivityModule,
     NotificationsModule,
     MailModule,
   ],
