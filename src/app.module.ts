@@ -22,12 +22,18 @@ import { Notification } from './notifications/entities/notification.entity';
 import { CartItem } from './cart/entities/cart-item.entity';
 import { Order } from './orders/entities/order.entity';
 import { OrderItem } from './orders/entities/order-item.entity';
+import { DeliveryRating } from './orders/entities/delivery-rating.entity';
 import { ActivityLog } from './activity/entities/activity-log.entity';
 import { Favorite } from './favorites/entities/favorite.entity';
+import { PromotionOffer } from './promotions/entities/promotion-offer.entity';
+import { PromotionPriceOverride } from './promotions/entities/promotion-price-override.entity';
+import { PromotionCampaign } from './promotions/entities/promotion-campaign.entity';
+import { PromotionCampaignProduct } from './promotions/entities/promotion-campaign-product.entity';
 import { NotificationsModule } from './notifications/notifications.module';
 import { MailModule } from './mail/mail.module';
 import { FavoritesModule } from './favorites/favorites.module';
 import { CompanyStatsModule } from './company-stats/company-stats.module';
+import { PromotionsModule } from './promotions/promotions.module';
 
 @Module({
   imports: [
@@ -54,8 +60,13 @@ import { CompanyStatsModule } from './company-stats/company-stats.module';
     CartItem,
     Order,
     OrderItem,
+    DeliveryRating,
     ActivityLog,
     Favorite,
+    PromotionOffer,
+    PromotionPriceOverride,
+    PromotionCampaign,
+    PromotionCampaignProduct,
   ],
 
   synchronize: configService.get<string>('DB_SYNC') === 'true',
@@ -76,6 +87,7 @@ import { CompanyStatsModule } from './company-stats/company-stats.module';
     ActivityModule,
     FavoritesModule,
     CompanyStatsModule,
+    PromotionsModule,
     NotificationsModule,
     MailModule,
   ],

@@ -1,0 +1,6 @@
+export enum PromotionOfferType {
+  CATEGORY_BOOST = 'CATEGORY_BOOST',
+  SEARCH_BOOST = 'SEARCH_BOOST',
+  HOME_SPOTLIGHT = 'HOME_SPOTLIGHT',
+  PACK = 'PACK',
+}

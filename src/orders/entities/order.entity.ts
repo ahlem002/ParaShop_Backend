@@ -10,6 +10,7 @@ import {
 } from 'typeorm';
 import { Client } from '../../clients/entities/client.entity';
 import { Company } from '../../companies/entities/company.entity';
+import { User } from '../../users/entities/user.entity';
 import { OrderStatus } from '../../common/enums/order-status.enum';
 import { OrderItem } from './order-item.entity';
 
@@ -63,6 +64,23 @@ export class Order {
 
   @Column({ type: 'varchar', length: 30, nullable: true })
   shippingPhone: string | null;
+
+  /** Assigned delivery driver (user with role DELIVERY). */
+  @Column({ type: 'varchar', length: 36, nullable: true })
+  deliveryUserId: string | null;
+
+  @ManyToOne(() => User, { onDelete: 'SET NULL', nullable: true })
+  @JoinColumn({ name: 'deliveryUserId' })
+  deliveryUser: User | null;
+
+  @Column({ type: 'varchar', length: 500, nullable: true })
+  deliveryNote: string | null;
+
+  @Column({ type: 'datetime', nullable: true })
+  deliveredAt: Date | null;
+
+  @Column({ type: 'datetime', nullable: true })
+  returnedAt: Date | null;
 
   @OneToMany(() => OrderItem, (item) => item.order, { cascade: true })
   items: OrderItem[];

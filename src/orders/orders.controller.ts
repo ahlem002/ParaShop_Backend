@@ -15,6 +15,7 @@ import { Role } from '../common/enums/role.enum';
 import type { JwtPayload } from '../auth/interfaces/jwt-payload.interface';
 import { BuyNowDto } from './dto/buy-now.dto';
 import { CheckoutDto } from './dto/checkout.dto';
+import { RateDeliveryDto } from './dto/rate-delivery.dto';
 import { OrdersService } from './orders.service';
 
 @Controller('orders')
@@ -43,6 +44,22 @@ export class OrdersController {
     @Param('orderId') orderId: string,
   ) {
     return this.ordersService.confirmFakePayment(user.sub, orderId);
+  }
+
+  @Post('mine/:orderId/rate-delivery')
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles(Role.CLIENT)
+  rateDelivery(
+    @CurrentUser() user: JwtPayload,
+    @Param('orderId') orderId: string,
+    @Body() dto: RateDeliveryDto,
+  ) {
+    return this.ordersService.rateDelivery(
+      user.sub,
+      orderId,
+      dto.rating,
+      dto.comment,
+    );
   }
 
   @Get('mine')

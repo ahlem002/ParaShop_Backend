@@ -1,12 +1,8 @@
 import { IsIn } from 'class-validator';
 import { OrderStatus } from '../../common/enums/order-status.enum';
 
-/** Fulfillment statuses a company may set after payment. */
-export const COMPANY_UPDATABLE_STATUSES = [
-  OrderStatus.PROCESSING,
-  OrderStatus.SHIPPED,
-  OrderStatus.DELIVERED,
-] as const;
+/** Fulfillment statuses a company may set without assigning a driver. */
+export const COMPANY_UPDATABLE_STATUSES = [OrderStatus.PROCESSING] as const;
 
 export type CompanyUpdatableStatus =
   (typeof COMPANY_UPDATABLE_STATUSES)[number];

@@ -51,6 +51,8 @@ export interface AuthUserResponse {
   profileImage: string | null;
   createdAt: string | null;
   twoFactorEnabled: boolean;
+  mustChangePassword: boolean;
+  profileCompleted: boolean;
   savedPaymentMethod: {
     cardName: string | null;
     cardNumber: string | null;
@@ -493,6 +495,7 @@ export class AuthService {
     }
 
     user.passwordHash = await bcrypt.hash(dto.newPassword, this.saltRounds);
+    user.mustChangePassword = false;
     await this.usersRepository.save(user);
 
     await this.activityService.log({
@@ -502,7 +505,10 @@ export class AuthService {
       message: 'Your account password was updated',
     });
 
-    return { message: 'Password updated successfully' };
+    return {
+      message: 'Password updated successfully',
+      user: await this.getProfile(userId),
+    };
   }
 
   async setupTwoFactor(userId: string) {
@@ -618,13 +624,26 @@ export class AuthService {
       user.phoneNumber = dto.phoneNumber.trim() || null;
     }
 
-    if (user.role === Role.CLIENT || user.role === Role.ADMIN) {
+    if (
+      user.role === Role.CLIENT ||
+      user.role === Role.ADMIN ||
+      user.role === Role.DELIVERY
+    ) {
       if (dto.birthDate !== undefined) {
         user.birthDate = dto.birthDate || null;
       }
       if (dto.gender !== undefined) {
         user.gender = dto.gender || null;
       }
+    }
+
+    if (
+      user.role === Role.DELIVERY &&
+      user.phoneNumber &&
+      user.gender &&
+      user.birthDate
+    ) {
+      user.profileCompleted = true;
     }
 
     await this.usersRepository.save(user);
@@ -812,6 +831,9 @@ export class AuthService {
         ? new Date(user.createdAt).toISOString()
         : null,
       twoFactorEnabled: Boolean(user.twoFactorEnabled),
+      mustChangePassword: Boolean(user.mustChangePassword),
+      profileCompleted:
+        user.profileCompleted !== undefined ? Boolean(user.profileCompleted) : true,
       savedPaymentMethod:
         user.role === Role.CLIENT
           ? {

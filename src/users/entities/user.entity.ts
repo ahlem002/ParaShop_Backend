@@ -55,6 +55,14 @@ export class User {
   @Column({ type: 'enum', enum: UserStatus, default: UserStatus.ACTIVE })
   status: UserStatus;
 
+  /** Temp password from admin invite — must change before using the app. */
+  @Column({ type: 'boolean', default: false })
+  mustChangePassword: boolean;
+
+  /** Driver/client onboarding: phone, gender, birthDate filled. */
+  @Column({ type: 'boolean', default: true })
+  profileCompleted: boolean;
+
   @CreateDateColumn()
   createdAt: Date;
 

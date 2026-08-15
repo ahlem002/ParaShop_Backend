@@ -38,6 +38,76 @@ export class MailService {
     });
   }
 
+  async sendDriverInviteEmail(input: {
+    to: string;
+    firstName: string;
+    temporaryPassword: string;
+  }) {
+    if (!this.transporter) {
+      this.logger.warn(
+        `Mail skipped: driver invite for ${input.to} (mail not configured).`,
+      );
+      return;
+    }
+
+    const loginUrl = `${this.frontendUrl}/login`;
+    const subject = 'Your ParaShop+ delivery account';
+    const text = [
+      `Dear ${input.firstName},`,
+      '',
+      'This is your delivery account on the ParaShop+ website.',
+      'Please log in and change your password on first login, then complete your profile.',
+      '',
+      `Email: ${input.to}`,
+      `Temporary password: ${input.temporaryPassword}`,
+      '',
+      `Login: ${loginUrl}`,
+      '',
+      'ParaShop+',
+    ].join('\n');
+
+    const html = `
+      <div style="font-family:Arial,Helvetica,sans-serif;background:#f5f3ff;padding:24px;">
+        <div style="max-width:560px;margin:0 auto;background:#ffffff;border-radius:16px;padding:28px;border:1px solid #e9d5ff;">
+          <p style="margin:0 0 8px;font-size:14px;color:#8b5cf6;font-weight:700;">ParaShop+</p>
+          <h1 style="margin:0 0 12px;font-size:22px;color:#1f2937;">Your delivery account</h1>
+          <p style="margin:0 0 16px;font-size:15px;line-height:1.5;color:#6b7280;">
+            Dear ${escapeHtml(input.firstName)},
+          </p>
+          <p style="margin:0 0 16px;font-size:15px;line-height:1.5;color:#6b7280;">
+            This is your account on the ParaShop+ website. Please log in and
+            <strong>change your password</strong> on first login, then complete your profile.
+          </p>
+          <div style="margin:0 0 20px;padding:16px;border-radius:12px;background:#f9fafb;border:1px solid #e5e7eb;">
+            <p style="margin:0 0 8px;font-size:14px;color:#374151;"><strong>Email:</strong> ${escapeHtml(input.to)}</p>
+            <p style="margin:0;font-size:14px;color:#374151;"><strong>Temporary password:</strong> ${escapeHtml(input.temporaryPassword)}</p>
+          </div>
+          <a href="${loginUrl}" style="display:inline-block;background:#8b5cf6;color:#ffffff;text-decoration:none;padding:12px 18px;border-radius:12px;font-weight:600;font-size:14px;">
+            Log in to ParaShop+
+          </a>
+          <p style="margin:24px 0 0;font-size:12px;color:#9ca3af;">
+            Keep this password private. You will be asked to change it after login.
+          </p>
+        </div>
+      </div>
+    `;
+
+    try {
+      await this.transporter.sendMail({
+        from: this.from,
+        to: input.to,
+        subject,
+        text,
+        html,
+      });
+    } catch (error) {
+      this.logger.error(
+        `Failed to send email to ${input.to}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+    }
+  }
+
   async sendNotificationEmail(input: {
     to: string;
     title: string;

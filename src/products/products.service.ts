@@ -13,6 +13,7 @@ import { UpdateProductDto } from './dto/update-product.dto';
 import { VerificationStatus } from '../common/enums/verification-status.enum';
 import { NotificationsService } from '../notifications/notifications.service';
 import { NotificationType } from '../notifications/notification-type.enum';
+import { PromotionsService } from '../promotions/promotions.service';
 
 @Injectable()
 export class ProductsService {
@@ -24,13 +25,47 @@ export class ProductsService {
     @InjectRepository(Category)
     private readonly categoriesRepository: Repository<Category>,
     private readonly notificationsService: NotificationsService,
+    private readonly promotionsService: PromotionsService,
   ) {}
 
   async findApprovedPublic() {
-    return this.productsRepository.find({
+    const products = await this.productsRepository.find({
       where: { verificationStatus: VerificationStatus.APPROVED },
       relations: { category: true, company: true },
       order: { createdAt: 'DESC' },
+    });
+
+    const sponsorship = await this.promotionsService.getActiveSponsorshipMap();
+
+    const enriched = products.map((product) => {
+      const boost = sponsorship.get(product.productId);
+      return {
+        ...product,
+        sponsored: Boolean(
+          boost && (boost.home || boost.category || boost.search),
+        ),
+        sponsorship: boost
+          ? {
+              home: boost.home,
+              category: boost.category,
+              search: boost.search,
+              paidAt: boost.paidAt,
+            }
+          : null,
+      };
+    });
+
+    // Home / general list: home boosts first (by paidAt), then others
+    return enriched.sort((a, b) => {
+      const aHome = a.sponsorship?.home ? 1 : 0;
+      const bHome = b.sponsorship?.home ? 1 : 0;
+      if (aHome !== bHome) return bHome - aHome;
+      const aPaid = a.sponsorship?.paidAt ?? '';
+      const bPaid = b.sponsorship?.paidAt ?? '';
+      if (aPaid !== bPaid) return bPaid.localeCompare(aPaid);
+      return (
+        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+      );
     });
   }
 

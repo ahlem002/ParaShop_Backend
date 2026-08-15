@@ -7,7 +7,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { randomUUID } from 'crypto';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, In, Repository } from 'typeorm';
 import { CartItem } from '../cart/entities/cart-item.entity';
 import { Client } from '../clients/entities/client.entity';
 import { Company } from '../companies/entities/company.entity';
@@ -25,17 +25,19 @@ import {
   COMPANY_UPDATABLE_STATUSES,
   type CompanyUpdatableStatus,
 } from './dto/update-order-status.dto';
+import type { DeliveryUpdatableStatus } from './dto/update-delivery-order-status.dto';
+import { DeliveryRating } from './entities/delivery-rating.entity';
 import { OrderItem } from './entities/order-item.entity';
 import { Order } from './entities/order.entity';
 import { FlouciService } from './flouci.service';
+import { Role } from '../common/enums/role.enum';
+import { UserStatus } from '../common/enums/user-status.enum';
 
 const COMPANY_STATUS_FLOW: Record<
   CompanyUpdatableStatus,
   OrderStatus[]
 > = {
   [OrderStatus.PROCESSING]: [OrderStatus.PAID],
-  [OrderStatus.SHIPPED]: [OrderStatus.PROCESSING],
-  [OrderStatus.DELIVERED]: [OrderStatus.SHIPPED],
 };
 
 @Injectable()
@@ -55,6 +57,8 @@ export class OrdersService {
     private readonly usersRepository: Repository<User>,
     @InjectRepository(Product)
     private readonly productsRepository: Repository<Product>,
+    @InjectRepository(DeliveryRating)
+    private readonly deliveryRatingsRepository: Repository<DeliveryRating>,
     private readonly flouciService: FlouciService,
     private readonly configService: ConfigService,
     private readonly dataSource: DataSource,
@@ -333,13 +337,31 @@ export class OrdersService {
     const client = await this.getClientForUser(userId);
     const orders = await this.ordersRepository.find({
       where: { clientId: client.clientId },
-      relations: { company: true, items: { product: true } },
+      relations: { company: true, items: { product: true }, deliveryUser: true },
       order: { createdAt: 'DESC' },
     });
 
     await this.backfillMissingItemImages(orders.flatMap((o) => o.items ?? []));
 
-    return orders.map((order) => this.toOrderView(order));
+    const ratings = await this.deliveryRatingsRepository.find({
+      where: { clientId: client.clientId },
+    });
+    const ratedOrderIds = new Set(ratings.map((item) => item.orderId));
+
+    return orders.map((order) => ({
+      ...this.toOrderView(order),
+      canRateDelivery:
+        order.status === OrderStatus.DELIVERED &&
+        Boolean(order.deliveryUserId) &&
+        !ratedOrderIds.has(order.orderId),
+      myDeliveryRating: ratings.find((item) => item.orderId === order.orderId)
+        ? {
+            rating: ratings.find((item) => item.orderId === order.orderId)!.rating,
+            comment:
+              ratings.find((item) => item.orderId === order.orderId)!.comment,
+          }
+        : null,
+    }));
   }
 
   async listCompanyOrders(userId: string) {
@@ -350,6 +372,7 @@ export class OrdersService {
         company: true,
         items: { product: true },
         client: { user: true },
+        deliveryUser: true,
       },
       order: { createdAt: 'DESC' },
     });
@@ -367,6 +390,7 @@ export class OrdersService {
         company: true,
         items: { product: true },
         client: { user: true },
+        deliveryUser: true,
       },
     });
 
@@ -377,6 +401,355 @@ export class OrdersService {
     await this.backfillMissingItemImages(order.items ?? []);
 
     return this.toCompanyOrderView(order);
+  }
+
+  async listAvailableDrivers(freeOnly = false) {
+    const drivers = await this.usersRepository.find({
+      where: {
+        role: Role.DELIVERY,
+        status: UserStatus.ACTIVE,
+        profileCompleted: true,
+        mustChangePassword: false,
+      },
+      order: { firstName: 'ASC', lastName: 'ASC' },
+    });
+
+    const active = await this.ordersRepository.find({
+      where: { status: OrderStatus.SHIPPED },
+    });
+    const busyIds = new Set(
+      active
+        .map((order) => order.deliveryUserId)
+        .filter((id): id is string => Boolean(id)),
+    );
+
+    const filtered = freeOnly
+      ? drivers.filter((driver) => !busyIds.has(driver.userId))
+      : drivers;
+
+    const ratings = await this.deliveryRatingsRepository.find({
+      where: { deliveryUserId: In(filtered.map((d) => d.userId)) },
+      order: { createdAt: 'DESC' },
+    });
+
+    return filtered.map((driver) => {
+      const driverRatings = ratings.filter(
+        (rating) => rating.deliveryUserId === driver.userId,
+      );
+      const averageRating =
+        driverRatings.length > 0
+          ? Number(
+              (
+                driverRatings.reduce((sum, item) => sum + item.rating, 0) /
+                driverRatings.length
+              ).toFixed(2),
+            )
+          : null;
+
+      return {
+        userId: driver.userId,
+        firstName: driver.firstName,
+        lastName: driver.lastName,
+        email: driver.email,
+        phoneNumber: driver.phoneNumber,
+        isFree: !busyIds.has(driver.userId),
+        averageRating,
+        ratingCount: driverRatings.length,
+        recentNotes: driverRatings
+          .filter((item) => item.comment)
+          .slice(0, 5)
+          .map((item) => ({
+            rating: item.rating,
+            comment: item.comment,
+            createdAt: item.createdAt,
+          })),
+      };
+    });
+  }
+
+  async assignDriverToOrder(
+    userId: string,
+    orderId: string,
+    deliveryUserId: string,
+  ) {
+    const company = await this.getCompanyForUser(userId);
+    const order = await this.ordersRepository.findOne({
+      where: { orderId, companyId: company.companyId },
+      relations: {
+        company: true,
+        items: { product: true },
+        client: { user: true },
+        deliveryUser: true,
+      },
+    });
+
+    if (!order) {
+      throw new NotFoundException('Order not found');
+    }
+
+    if (order.status !== OrderStatus.PROCESSING) {
+      throw new BadRequestException(
+        'Only processing orders can be assigned to a driver',
+      );
+    }
+
+    const driver = await this.usersRepository.findOne({
+      where: {
+        userId: deliveryUserId,
+        role: Role.DELIVERY,
+        status: UserStatus.ACTIVE,
+      },
+    });
+
+    if (!driver) {
+      throw new NotFoundException('Delivery driver not found');
+    }
+
+    if (driver.mustChangePassword || !driver.profileCompleted) {
+      throw new BadRequestException(
+        'This driver has not finished account setup yet',
+      );
+    }
+
+    order.deliveryUserId = driver.userId;
+    order.deliveryUser = driver;
+    order.status = OrderStatus.SHIPPED;
+    await this.ordersRepository.save(order);
+
+    await this.activityService.log({
+      userId,
+      type: ActivityType.ORDER_STATUS_UPDATED,
+      title: 'Driver assigned',
+      message: `Order ${order.orderId.slice(0, 8)}… assigned to ${driver.firstName} ${driver.lastName}`,
+      metadata: {
+        orderId: order.orderId,
+        status: OrderStatus.SHIPPED,
+        deliveryUserId: driver.userId,
+      },
+    });
+
+    void this.notificationsService.createForUser({
+      userId: driver.userId,
+      type: NotificationType.DELIVERY_ASSIGNED,
+      title: 'New delivery assigned',
+      message: `You have a new delivery from ${company.companyName}.`,
+      link: '/delivery/orders',
+      relatedId: order.orderId,
+    });
+
+    const clientUserId = order.client?.userId ?? order.client?.user?.userId;
+    if (clientUserId) {
+      void this.notificationsService.createForUser({
+        userId: clientUserId,
+        type: NotificationType.ORDER_UPDATED,
+        title: 'Order update',
+        message: `Your order from ${company.companyName} is now shipped.`,
+        link: '/orders',
+        relatedId: order.orderId,
+      });
+    }
+
+    await this.backfillMissingItemImages(order.items ?? []);
+    return this.toCompanyOrderView(order);
+  }
+
+  async listDeliveryOrders(
+    userId: string,
+    scope: 'active' | 'history' | 'all' = 'all',
+  ) {
+    const where =
+      scope === 'active'
+        ? { deliveryUserId: userId, status: OrderStatus.SHIPPED }
+        : scope === 'history'
+          ? {
+              deliveryUserId: userId,
+              status: In([OrderStatus.DELIVERED, OrderStatus.RETURNED]),
+            }
+          : { deliveryUserId: userId };
+
+    const orders = await this.ordersRepository.find({
+      where,
+      relations: {
+        company: true,
+        items: { product: true },
+        client: { user: true },
+        deliveryUser: true,
+      },
+      order: { updatedAt: 'DESC' },
+    });
+
+    await this.backfillMissingItemImages(orders.flatMap((o) => o.items ?? []));
+    return orders.map((order) => this.toDeliveryOrderView(order));
+  }
+
+  async getDeliveryOrder(userId: string, orderId: string) {
+    const order = await this.ordersRepository.findOne({
+      where: { orderId, deliveryUserId: userId },
+      relations: {
+        company: true,
+        items: { product: true },
+        client: { user: true },
+        deliveryUser: true,
+      },
+    });
+
+    if (!order) {
+      throw new NotFoundException('Order not found');
+    }
+
+    await this.backfillMissingItemImages(order.items ?? []);
+    return this.toDeliveryOrderView(order);
+  }
+
+  async updateDeliveryOrderStatus(
+    userId: string,
+    orderId: string,
+    nextStatus: DeliveryUpdatableStatus,
+    note?: string,
+  ) {
+    const order = await this.ordersRepository.findOne({
+      where: { orderId, deliveryUserId: userId },
+      relations: {
+        company: { user: true },
+        items: { product: true },
+        client: { user: true },
+        deliveryUser: true,
+      },
+    });
+
+    if (!order) {
+      throw new NotFoundException('Order not found');
+    }
+
+    if (order.status !== OrderStatus.SHIPPED) {
+      throw new BadRequestException(
+        'Only shipped orders can be marked delivered or returned',
+      );
+    }
+
+    if (nextStatus === OrderStatus.RETURNED) {
+      const trimmed = note?.trim() ?? '';
+      if (trimmed.length < 3) {
+        throw new BadRequestException(
+          'A note is required when returning an order (e.g. client refused)',
+        );
+      }
+      order.deliveryNote = trimmed;
+      order.returnedAt = new Date();
+      order.deliveredAt = null;
+    } else {
+      order.deliveryNote = note?.trim() || null;
+      order.deliveredAt = new Date();
+      order.returnedAt = null;
+    }
+
+    order.status = nextStatus;
+    await this.ordersRepository.save(order);
+
+    await this.activityService.log({
+      userId,
+      type: ActivityType.ORDER_STATUS_UPDATED,
+      title: 'Delivery status updated',
+      message: `Order ${order.orderId.slice(0, 8)}… → ${nextStatus}`,
+      metadata: {
+        orderId: order.orderId,
+        status: nextStatus,
+        note: order.deliveryNote,
+      },
+    });
+
+    const clientUserId = order.client?.userId ?? order.client?.user?.userId;
+    if (clientUserId) {
+      const statusLabel = this.statusLabel(nextStatus);
+      void this.notificationsService.createForUser({
+        userId: clientUserId,
+        type: NotificationType.ORDER_UPDATED,
+        title: 'Order update',
+        message:
+          nextStatus === OrderStatus.RETURNED
+            ? `Your order from ${order.company.companyName} was returned to the seller.`
+            : `Your order from ${order.company.companyName} is now ${statusLabel}.`,
+        link: '/orders',
+        relatedId: order.orderId,
+      });
+    }
+
+    const companyUserId = order.company?.userId ?? order.company?.user?.userId;
+    if (companyUserId) {
+      void this.notificationsService.createForUser({
+        userId: companyUserId,
+        type: NotificationType.ORDER_UPDATED,
+        title: 'Delivery update',
+        message:
+          nextStatus === OrderStatus.RETURNED
+            ? `Order ${order.trackingId} was returned. Note: ${order.deliveryNote}`
+            : `Order ${order.trackingId} was delivered.`,
+        link: '/company/delivery',
+        relatedId: order.orderId,
+      });
+    }
+
+    await this.backfillMissingItemImages(order.items ?? []);
+    return this.toDeliveryOrderView(order);
+  }
+
+  async rateDelivery(
+    userId: string,
+    orderId: string,
+    rating: number,
+    comment?: string,
+  ) {
+    const client = await this.getClientForUser(userId);
+    const order = await this.ordersRepository.findOne({
+      where: { orderId, clientId: client.clientId },
+      relations: { deliveryUser: true, company: true },
+    });
+
+    if (!order) {
+      throw new NotFoundException('Order not found');
+    }
+
+    if (order.status !== OrderStatus.DELIVERED) {
+      throw new BadRequestException('You can only rate delivered orders');
+    }
+
+    if (!order.deliveryUserId) {
+      throw new BadRequestException('No delivery driver was assigned');
+    }
+
+    const existing = await this.deliveryRatingsRepository.findOne({
+      where: { orderId: order.orderId },
+    });
+    if (existing) {
+      throw new BadRequestException('You already rated this delivery');
+    }
+
+    const saved = await this.deliveryRatingsRepository.save(
+      this.deliveryRatingsRepository.create({
+        orderId: order.orderId,
+        deliveryUserId: order.deliveryUserId,
+        clientId: client.clientId,
+        rating,
+        comment: comment?.trim() || null,
+      }),
+    );
+
+    void this.notificationsService.createForUser({
+      userId: order.deliveryUserId,
+      type: NotificationType.DRIVER_RATED,
+      title: 'New delivery rating',
+      message: `A client rated your delivery ${rating}/5.`,
+      link: '/delivery/orders',
+      relatedId: order.orderId,
+    });
+
+    return {
+      ratingId: saved.ratingId,
+      orderId: saved.orderId,
+      rating: saved.rating,
+      comment: saved.comment,
+      createdAt: saved.createdAt,
+    };
   }
 
   async updateCompanyOrderStatus(
@@ -397,6 +770,7 @@ export class OrdersService {
         company: true,
         items: { product: true },
         client: { user: true },
+        deliveryUser: true,
       },
     });
 
@@ -541,10 +915,11 @@ export class OrdersService {
 
     if (
       order.status === OrderStatus.SHIPPED ||
-      order.status === OrderStatus.DELIVERED
+      order.status === OrderStatus.DELIVERED ||
+      order.status === OrderStatus.RETURNED
     ) {
       throw new BadRequestException(
-        'Shipped or delivered orders cannot be cancelled',
+        'Shipped, delivered, or returned orders cannot be cancelled',
       );
     }
 
@@ -564,10 +939,11 @@ export class OrdersService {
 
       if (
         locked.status === OrderStatus.SHIPPED ||
-        locked.status === OrderStatus.DELIVERED
+        locked.status === OrderStatus.DELIVERED ||
+        locked.status === OrderStatus.RETURNED
       ) {
         throw new BadRequestException(
-          'Shipped or delivered orders cannot be cancelled',
+          'Shipped, delivered, or returned orders cannot be cancelled',
         );
       }
 
@@ -847,6 +1223,8 @@ export class OrdersService {
         return 'shipped';
       case OrderStatus.DELIVERED:
         return 'delivered';
+      case OrderStatus.RETURNED:
+        return 'returned to seller';
       default:
         return status;
     }
@@ -863,14 +1241,39 @@ export class OrdersService {
       flouciPaymentId: order.flouciPaymentId,
       shippingAddress: order.shippingAddress,
       shippingPhone: order.shippingPhone ?? null,
+      deliveryNote: order.deliveryNote ?? null,
+      deliveredAt: order.deliveredAt,
+      returnedAt: order.returnedAt,
       paidAt: order.paidAt,
       createdAt: order.createdAt,
+      delivery: order.deliveryUser
+        ? {
+            userId: order.deliveryUser.userId,
+            firstName: order.deliveryUser.firstName,
+            lastName: order.deliveryUser.lastName,
+            phoneNumber: order.deliveryUser.phoneNumber ?? null,
+          }
+        : order.deliveryUserId
+          ? {
+              userId: order.deliveryUserId,
+              firstName: 'Driver',
+              lastName: '',
+              phoneNumber: null as string | null,
+            }
+          : null,
       company: order.company
         ? {
             companyId: order.company.companyId,
             companyName: order.company.companyName,
+            address: order.company.address ?? null,
+            phoneNumber: order.company.phoneNumber ?? null,
           }
-        : { companyId: order.companyId, companyName: 'Company' },
+        : {
+            companyId: order.companyId,
+            companyName: 'Company',
+            address: null as string | null,
+            phoneNumber: null as string | null,
+          },
       items: (order.items ?? []).map((item) => ({
         orderItemId: item.orderItemId,
         productId: item.productId,
@@ -904,6 +1307,33 @@ export class OrdersService {
             phoneNumber: null as string | null,
           },
       nextStatuses: this.nextStatusesFor(order.status),
+      canAssignDriver: order.status === OrderStatus.PROCESSING && !order.deliveryUserId,
+    };
+  }
+
+  private toDeliveryOrderView(order: Order) {
+    const base = this.toOrderView(order);
+    const user = order.client?.user;
+    return {
+      ...base,
+      client: user
+        ? {
+            clientId: order.client.clientId,
+            firstName: user.firstName,
+            lastName: user.lastName,
+            email: user.email,
+            phoneNumber:
+              order.shippingPhone ?? user.phoneNumber ?? null,
+          }
+        : {
+            clientId: order.clientId,
+            firstName: 'Client',
+            lastName: '',
+            email: '',
+            phoneNumber: order.shippingPhone ?? null,
+          },
+      canMarkDelivered: order.status === OrderStatus.SHIPPED,
+      canMarkReturned: order.status === OrderStatus.SHIPPED,
     };
   }
 

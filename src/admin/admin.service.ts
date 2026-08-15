@@ -1,9 +1,12 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
+import * as bcrypt from 'bcrypt';
+import { randomBytes } from 'crypto';
 import { Repository, MoreThanOrEqual } from 'typeorm';
 import { Client } from '../clients/entities/client.entity';
 import { Company } from '../companies/entities/company.entity';
@@ -17,8 +20,16 @@ import { ApprovalDecision } from '../common/enums/approval-decision.enum';
 import { UpdateUserStatusDto } from './dto/update-user-status.dto';
 import { UpdateCompanyVerificationDto } from './dto/update-company-verification.dto';
 import { UpdateProductVerificationDto } from './dto/update-product-verification.dto';
+import { CreateDriverDto } from './dto/create-driver.dto';
+import { UpdateDriverDto } from './dto/update-driver.dto';
+import { UpdateAdminUserDto } from './dto/update-admin-user.dto';
+import { UpdateAdminClientDto } from './dto/update-admin-client.dto';
+import { UpdateAdminCompanyDto } from './dto/update-admin-company.dto';
 import { NotificationsService } from '../notifications/notifications.service';
 import { NotificationType } from '../notifications/notification-type.enum';
+import { MailService } from '../mail/mail.service';
+import { Order } from '../orders/entities/order.entity';
+import { OrderStatus } from '../common/enums/order-status.enum';
 
 export interface AdminUserResponse {
   userId: string;
@@ -30,6 +41,8 @@ export interface AdminUserResponse {
   gender: string | null;
   role: Role;
   status: UserStatus;
+  mustChangePassword?: boolean;
+  profileCompleted?: boolean;
   companyVerificationStatus: VerificationStatus | null;
   createdAt: Date;
 }
@@ -152,8 +165,158 @@ export class AdminService {
     private readonly approvalsRepository: Repository<AdminApproval>,
     @InjectRepository(Product)
     private readonly productsRepository: Repository<Product>,
+    @InjectRepository(Order)
+    private readonly ordersRepository: Repository<Order>,
     private readonly notificationsService: NotificationsService,
+    private readonly mailService: MailService,
   ) {}
+
+  async createDriver(dto: CreateDriverDto): Promise<AdminUserResponse> {
+    const email = dto.email.trim().toLowerCase();
+    const existing = await this.usersRepository.findOne({ where: { email } });
+    if (existing) {
+      throw new ConflictException('An account with this email already exists');
+    }
+
+    const temporaryPassword = this.generateTemporaryPassword();
+    const passwordHash = await bcrypt.hash(temporaryPassword, 10);
+
+    const user = await this.usersRepository.save(
+      this.usersRepository.create({
+        firstName: dto.firstName.trim(),
+        lastName: dto.lastName.trim(),
+        email,
+        passwordHash,
+        phoneNumber: null,
+        birthDate: null,
+        gender: null,
+        profileImage: null,
+        role: Role.DELIVERY,
+        status: UserStatus.ACTIVE,
+        mustChangePassword: true,
+        profileCompleted: false,
+        twoFactorEnabled: false,
+        twoFactorSecret: null,
+        googleId: null,
+      }),
+    );
+
+    void this.mailService.sendDriverInviteEmail({
+      to: email,
+      firstName: user.firstName,
+      temporaryPassword,
+    });
+
+    return this.toUserResponse(user);
+  }
+
+  async findAllDrivers(): Promise<AdminUserResponse[]> {
+    const drivers = await this.usersRepository.find({
+      where: { role: Role.DELIVERY },
+      order: { createdAt: 'DESC' },
+    });
+    return drivers.map((user) => this.toUserResponse(user));
+  }
+
+  async getDriver(userId: string): Promise<AdminUserResponse> {
+    const driver = await this.requireDriver(userId);
+    return this.toUserResponse(driver);
+  }
+
+  async resendDriverInvite(userId: string): Promise<AdminUserResponse> {
+    const driver = await this.requireDriver(userId);
+
+    if (!driver.mustChangePassword) {
+      throw new BadRequestException(
+        'This driver already logged in. Use modify instead of resend.',
+      );
+    }
+
+    const temporaryPassword = this.generateTemporaryPassword();
+    driver.passwordHash = await bcrypt.hash(temporaryPassword, 10);
+    driver.mustChangePassword = true;
+    driver.profileCompleted = false;
+    await this.usersRepository.save(driver);
+
+    void this.mailService.sendDriverInviteEmail({
+      to: driver.email,
+      firstName: driver.firstName,
+      temporaryPassword,
+    });
+
+    return this.toUserResponse(driver);
+  }
+
+  async updateDriver(
+    userId: string,
+    dto: UpdateDriverDto,
+  ): Promise<AdminUserResponse> {
+    const driver = await this.requireDriver(userId);
+
+    if (dto.email !== undefined) {
+      const email = dto.email.trim().toLowerCase();
+      if (email !== driver.email) {
+        const existing = await this.usersRepository.findOne({ where: { email } });
+        if (existing) {
+          throw new ConflictException('An account with this email already exists');
+        }
+        driver.email = email;
+      }
+    }
+
+    if (dto.firstName !== undefined) driver.firstName = dto.firstName.trim();
+    if (dto.lastName !== undefined) driver.lastName = dto.lastName.trim();
+    if (dto.phoneNumber !== undefined) {
+      driver.phoneNumber = dto.phoneNumber.trim() || null;
+    }
+    if (dto.gender !== undefined) {
+      driver.gender = dto.gender.trim() || null;
+    }
+    if (dto.birthDate !== undefined) {
+      driver.birthDate = dto.birthDate || null;
+    }
+
+    if (driver.phoneNumber && driver.gender && driver.birthDate) {
+      driver.profileCompleted = true;
+    }
+
+    await this.usersRepository.save(driver);
+    return this.toUserResponse(driver);
+  }
+
+  async deleteDriver(userId: string): Promise<{ success: boolean }> {
+    const driver = await this.requireDriver(userId);
+
+    const activeDeliveries = await this.ordersRepository.count({
+      where: {
+        deliveryUserId: driver.userId,
+        status: OrderStatus.SHIPPED,
+      },
+    });
+
+    if (activeDeliveries > 0) {
+      throw new BadRequestException(
+        'Cannot delete a driver with active out-for-delivery orders',
+      );
+    }
+
+    await this.usersRepository.remove(driver);
+    return { success: true };
+  }
+
+  private async requireDriver(userId: string) {
+    const driver = await this.usersRepository.findOne({
+      where: { userId, role: Role.DELIVERY },
+    });
+    if (!driver) {
+      throw new NotFoundException('Driver not found');
+    }
+    return driver;
+  }
+
+  private generateTemporaryPassword(): string {
+    return `Ps+${randomBytes(4).toString('hex')}A1`;
+  }
 
   async getDashboardStats(): Promise<AdminDashboardStats> {
     const [
@@ -360,6 +523,80 @@ export class AdminService {
     return this.toUserResponse(user);
   }
 
+  async updateUser(
+    userId: string,
+    dto: UpdateAdminUserDto,
+  ): Promise<AdminUserResponse> {
+    const user = await this.usersRepository.findOne({
+      where: { userId },
+      relations: { company: true },
+    });
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    if (dto.email !== undefined) {
+      const email = dto.email.trim().toLowerCase();
+      if (email !== user.email) {
+        const existing = await this.usersRepository.findOne({ where: { email } });
+        if (existing) {
+          throw new ConflictException('An account with this email already exists');
+        }
+        user.email = email;
+      }
+    }
+
+    if (dto.firstName !== undefined) user.firstName = dto.firstName.trim();
+    if (dto.lastName !== undefined) user.lastName = dto.lastName.trim();
+    if (dto.phoneNumber !== undefined) {
+      user.phoneNumber = dto.phoneNumber.trim() || null;
+    }
+    if (dto.gender !== undefined) user.gender = dto.gender.trim() || null;
+    if (dto.birthDate !== undefined) user.birthDate = dto.birthDate || null;
+    if (dto.status !== undefined) user.status = dto.status;
+
+    await this.usersRepository.save(user);
+    return this.toUserResponse(user);
+  }
+
+  async deleteUser(userId: string): Promise<{ success: boolean }> {
+    const user = await this.usersRepository.findOne({
+      where: { userId },
+      relations: { company: true },
+    });
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    if (user.role === Role.ADMIN) {
+      const adminCount = await this.usersRepository.count({
+        where: { role: Role.ADMIN },
+      });
+      if (adminCount <= 1) {
+        throw new BadRequestException('Cannot delete the last admin account');
+      }
+    }
+
+    if (user.role === Role.DELIVERY) {
+      const activeDeliveries = await this.ordersRepository.count({
+        where: {
+          deliveryUserId: user.userId,
+          status: OrderStatus.SHIPPED,
+        },
+      });
+      if (activeDeliveries > 0) {
+        throw new BadRequestException(
+          'Cannot delete a driver with active out-for-delivery orders',
+        );
+      }
+    }
+
+    await this.usersRepository.remove(user);
+    return { success: true };
+  }
+
   async findAllClients(): Promise<AdminClientResponse[]> {
     const clients = await this.clientsRepository
       .createQueryBuilder('client')
@@ -390,6 +627,71 @@ export class AdminService {
     return this.toClientResponse(client);
   }
 
+  async updateClient(
+    clientId: string,
+    dto: UpdateAdminClientDto,
+  ): Promise<AdminClientResponse> {
+    const client = await this.clientsRepository.findOne({
+      where: { clientId },
+      relations: { user: true },
+    });
+
+    if (!client || client.user.role !== Role.CLIENT) {
+      throw new NotFoundException('Client not found');
+    }
+
+    if (dto.email !== undefined) {
+      const email = dto.email.trim().toLowerCase();
+      if (email !== client.user.email) {
+        const existing = await this.usersRepository.findOne({ where: { email } });
+        if (existing) {
+          throw new ConflictException('An account with this email already exists');
+        }
+        client.user.email = email;
+      }
+    }
+
+    if (dto.firstName !== undefined) {
+      client.user.firstName = dto.firstName.trim();
+    }
+    if (dto.lastName !== undefined) {
+      client.user.lastName = dto.lastName.trim();
+    }
+    if (dto.phoneNumber !== undefined) {
+      client.user.phoneNumber = dto.phoneNumber.trim() || null;
+    }
+    if (dto.gender !== undefined) {
+      client.user.gender = dto.gender.trim() || null;
+    }
+    if (dto.birthDate !== undefined) {
+      client.user.birthDate = dto.birthDate || null;
+    }
+    if (dto.status !== undefined) {
+      client.user.status = dto.status;
+    }
+    if (dto.address !== undefined) {
+      client.address = dto.address.trim() || null;
+    }
+
+    await this.usersRepository.save(client.user);
+    await this.clientsRepository.save(client);
+    return this.toClientResponse(client);
+  }
+
+  async deleteClient(clientId: string): Promise<{ success: boolean }> {
+    const client = await this.clientsRepository.findOne({
+      where: { clientId },
+      relations: { user: true },
+    });
+
+    if (!client || client.user.role !== Role.CLIENT) {
+      throw new NotFoundException('Client not found');
+    }
+
+    await this.usersRepository.remove(client.user);
+    return { success: true };
+  }
+
   async findAllCompanies(): Promise<AdminCompanyResponse[]> {
     const companies = await this.companiesRepository.find({
       relations: { user: true },
@@ -397,6 +699,75 @@ export class AdminService {
     });
 
     return companies.map((company) => this.toCompanyResponse(company));
+  }
+
+  async updateCompany(
+    companyId: string,
+    dto: UpdateAdminCompanyDto,
+  ): Promise<AdminCompanyResponse> {
+    const company = await this.companiesRepository.findOne({
+      where: { companyId },
+      relations: { user: true },
+    });
+
+    if (!company) {
+      throw new NotFoundException('Company not found');
+    }
+
+    if (dto.companyName !== undefined) {
+      company.companyName = dto.companyName.trim();
+    }
+    if (dto.companyType !== undefined) {
+      company.companyType = dto.companyType;
+    }
+    if (dto.establishmentDate !== undefined) {
+      company.establishmentDate = dto.establishmentDate;
+    }
+    if (dto.description !== undefined) {
+      company.description = dto.description.trim() || null;
+    }
+    if (dto.email !== undefined) {
+      company.email = dto.email.trim().toLowerCase();
+    }
+    if (dto.phoneNumber !== undefined) {
+      company.phoneNumber = dto.phoneNumber.trim() || null;
+    }
+    if (dto.address !== undefined) {
+      company.address = dto.address.trim() || null;
+    }
+    if (dto.ownerFirstName !== undefined && company.user) {
+      company.user.firstName = dto.ownerFirstName.trim();
+    }
+    if (dto.ownerLastName !== undefined && company.user) {
+      company.user.lastName = dto.ownerLastName.trim();
+    }
+    if (dto.ownerStatus !== undefined && company.user) {
+      company.user.status = dto.ownerStatus;
+    }
+
+    if (company.user) {
+      await this.usersRepository.save(company.user);
+    }
+    await this.companiesRepository.save(company);
+    return this.toCompanyResponse(company);
+  }
+
+  async deleteCompany(companyId: string): Promise<{ success: boolean }> {
+    const company = await this.companiesRepository.findOne({
+      where: { companyId },
+      relations: { user: true },
+    });
+
+    if (!company) {
+      throw new NotFoundException('Company not found');
+    }
+
+    if (company.user) {
+      await this.usersRepository.remove(company.user);
+    } else {
+      await this.companiesRepository.remove(company);
+    }
+    return { success: true };
   }
 
   async updateCompanyVerification(
@@ -503,6 +874,11 @@ export class AdminService {
       gender: user.gender,
       role: user.role,
       status: user.status,
+      mustChangePassword: Boolean(user.mustChangePassword),
+      profileCompleted:
+        user.profileCompleted !== undefined
+          ? Boolean(user.profileCompleted)
+          : true,
       companyVerificationStatus: user.company?.verificationStatus ?? null,
       createdAt: user.createdAt,
     };

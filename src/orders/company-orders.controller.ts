@@ -4,6 +4,8 @@ import {
   Get,
   Param,
   Patch,
+  Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
@@ -13,6 +15,7 @@ import { ApprovedCompanyGuard } from '../auth/guards/approved-company.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Role } from '../common/enums/role.enum';
 import type { JwtPayload } from '../auth/interfaces/jwt-payload.interface';
+import { AssignDriverDto } from './dto/assign-driver.dto';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
 import { OrdersService } from './orders.service';
 
@@ -25,6 +28,11 @@ export class CompanyOrdersController {
   @Get()
   listMine(@CurrentUser() user: JwtPayload) {
     return this.ordersService.listCompanyOrders(user.sub);
+  }
+
+  @Get('drivers/available')
+  listDrivers(@Query('freeOnly') freeOnly?: string) {
+    return this.ordersService.listAvailableDrivers(freeOnly === 'true');
   }
 
   @Get(':orderId')
@@ -45,6 +53,19 @@ export class CompanyOrdersController {
       user.sub,
       orderId,
       dto.status,
+    );
+  }
+
+  @Post(':orderId/assign-driver')
+  assignDriver(
+    @CurrentUser() user: JwtPayload,
+    @Param('orderId') orderId: string,
+    @Body() dto: AssignDriverDto,
+  ) {
+    return this.ordersService.assignDriverToOrder(
+      user.sub,
+      orderId,
+      dto.deliveryUserId,
     );
   }
 }

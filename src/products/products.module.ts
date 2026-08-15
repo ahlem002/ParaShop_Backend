@@ -9,11 +9,13 @@ import { ProductsController } from './products.controller';
 import { PublicProductsController } from './public-products.controller';
 import { ProductsService } from './products.service';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { PromotionsModule } from '../promotions/promotions.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([Product, Company, Category]),
     NotificationsModule,
+    PromotionsModule,
   ],
   controllers: [ProductsController, PublicProductsController],
   providers: [ProductsService, RolesGuard, ApprovedCompanyGuard],
