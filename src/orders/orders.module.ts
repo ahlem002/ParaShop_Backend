@@ -7,6 +7,8 @@ import { Product } from '../products/entities/product.entity';
 import { User } from '../users/entities/user.entity';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { ActivityModule } from '../activity/activity.module';
+import { NotificationsModule } from '../notifications/notifications.module';
+import { CompanyOrdersController } from './company-orders.controller';
 import { OrderItem } from './entities/order-item.entity';
 import { Order } from './entities/order.entity';
 import { FlouciService } from './flouci.service';
@@ -25,8 +27,9 @@ import { OrdersService } from './orders.service';
       User,
     ]),
     ActivityModule,
+    NotificationsModule,
   ],
-  controllers: [OrdersController],
+  controllers: [OrdersController, CompanyOrdersController],
   providers: [OrdersService, FlouciService, RolesGuard],
   exports: [OrdersService],
 })

@@ -18,7 +18,9 @@ import { AuthService } from './auth.service';
 import { RegisterClientDto } from './dto/register-client.dto';
 import { RegisterCompanyDto } from './dto/register-company.dto';
 import { LoginDto } from './dto/login.dto';
+import { GoogleAuthDto } from './dto/google-auth.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
+import { SaveCheckoutDetailsDto } from './dto/save-checkout-details.dto';
 import {
   ChangePasswordDto,
   DisableTwoFactorDto,
@@ -89,6 +91,11 @@ export class AuthController {
     return this.authService.login(dto);
   }
 
+  @Post('google')
+  loginWithGoogle(@Body() dto: GoogleAuthDto) {
+    return this.authService.loginWithGoogle(dto);
+  }
+
   @Post('2fa/verify-login')
   verifyTwoFactorLogin(@Body() dto: VerifyTwoFactorLoginDto) {
     return this.authService.verifyTwoFactorLogin(dto);
@@ -139,6 +146,15 @@ export class AuthController {
         ? `/uploads/profiles/${profileImageFile.filename}`
         : undefined,
     );
+  }
+
+  @Patch('checkout-details')
+  @UseGuards(AuthGuard('jwt'))
+  saveCheckoutDetails(
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: SaveCheckoutDetailsDto,
+  ) {
+    return this.authService.saveCheckoutDetails(user.sub, dto);
   }
 
   @Post('change-password')

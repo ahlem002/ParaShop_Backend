@@ -13,6 +13,7 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Role } from '../common/enums/role.enum';
 import type { JwtPayload } from '../auth/interfaces/jwt-payload.interface';
+import { BuyNowDto } from './dto/buy-now.dto';
 import { CheckoutDto } from './dto/checkout.dto';
 import { OrdersService } from './orders.service';
 
@@ -25,6 +26,23 @@ export class OrdersController {
   @Roles(Role.CLIENT)
   checkout(@CurrentUser() user: JwtPayload, @Body() dto: CheckoutDto) {
     return this.ordersService.checkout(user.sub, dto);
+  }
+
+  @Post('buy-now')
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles(Role.CLIENT)
+  buyNow(@CurrentUser() user: JwtPayload, @Body() dto: BuyNowDto) {
+    return this.ordersService.buyNow(user.sub, dto);
+  }
+
+  @Post('mine/:orderId/confirm-payment')
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles(Role.CLIENT)
+  confirmPayment(
+    @CurrentUser() user: JwtPayload,
+    @Param('orderId') orderId: string,
+  ) {
+    return this.ordersService.confirmFakePayment(user.sub, orderId);
   }
 
   @Get('mine')

@@ -5,10 +5,12 @@ import {
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
 import * as bcrypt from 'bcrypt';
 import { createHmac, randomBytes } from 'crypto';
+import { OAuth2Client } from 'google-auth-library';
 import { DataSource, Repository } from 'typeorm';
 import { User } from '../users/entities/user.entity';
 import { Client } from '../clients/entities/client.entity';
@@ -19,7 +21,9 @@ import { VerificationStatus } from '../common/enums/verification-status.enum';
 import { RegisterClientDto } from './dto/register-client.dto';
 import { RegisterCompanyDto } from './dto/register-company.dto';
 import { LoginDto } from './dto/login.dto';
+import { GoogleAuthDto } from './dto/google-auth.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
+import { SaveCheckoutDetailsDto } from './dto/save-checkout-details.dto';
 import {
   ChangePasswordDto,
   DisableTwoFactorDto,
@@ -47,6 +51,11 @@ export interface AuthUserResponse {
   profileImage: string | null;
   createdAt: string | null;
   twoFactorEnabled: boolean;
+  savedPaymentMethod: {
+    cardName: string | null;
+    cardNumber: string | null;
+    cardExpiry: string | null;
+  } | null;
   company: {
     companyId: string;
     companyName: string;
@@ -73,6 +82,8 @@ const BASE32_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
 @Injectable()
 export class AuthService {
   private readonly saltRounds = 10;
+  private readonly googleClient: OAuth2Client;
+  private readonly googleClientId: string;
 
   constructor(
     @InjectRepository(User)
@@ -86,7 +97,12 @@ export class AuthService {
     private readonly notificationsService: NotificationsService,
     private readonly mailService: MailService,
     private readonly activityService: ActivityService,
-  ) {}
+    private readonly configService: ConfigService,
+  ) {
+    this.googleClientId =
+      this.configService.get<string>('GOOGLE_CLIENT_ID')?.trim() ?? '';
+    this.googleClient = new OAuth2Client(this.googleClientId || undefined);
+  }
 
   async registerClient(dto: RegisterClientDto): Promise<AuthResponse> {
     const normalizedEmail = this.normalizeEmail(dto.email);
@@ -222,6 +238,12 @@ export class AuthService {
       throw new ForbiddenException('Your account has been blocked');
     }
 
+    if (!user.passwordHash) {
+      throw new UnauthorizedException(
+        'This account uses Google Sign-In. Continue with Google instead.',
+      );
+    }
+
     const isPasswordValid = await bcrypt.compare(
       dto.password,
       user.passwordHash,
@@ -249,6 +271,153 @@ export class AuthService {
       type: ActivityType.LOGIN,
       title: 'Signed in',
       message: 'You signed in to your account',
+    });
+
+    return auth;
+  }
+
+  async loginWithGoogle(dto: GoogleAuthDto): Promise<LoginResult> {
+    if (!this.googleClientId) {
+      throw new BadRequestException(
+        'Google Sign-In is not configured on the server',
+      );
+    }
+
+    let payload: {
+      sub?: string;
+      email?: string;
+      email_verified?: boolean | string;
+      given_name?: string;
+      family_name?: string;
+      picture?: string;
+      name?: string;
+    };
+
+    try {
+      const ticket = await this.googleClient.verifyIdToken({
+        idToken: dto.idToken,
+        audience: this.googleClientId,
+      });
+      payload = ticket.getPayload() ?? {};
+    } catch {
+      throw new UnauthorizedException('Invalid Google token');
+    }
+
+    const googleId = payload.sub?.trim();
+    const email = payload.email?.trim().toLowerCase();
+    const emailVerified =
+      payload.email_verified === true || payload.email_verified === 'true';
+
+    if (!googleId || !email || !emailVerified) {
+      throw new UnauthorizedException(
+        'Google account email could not be verified',
+      );
+    }
+
+    let user = await this.usersRepository.findOne({
+      where: { googleId },
+      relations: { company: true, client: true },
+    });
+
+    if (!user) {
+      user = await this.usersRepository.findOne({
+        where: { email },
+        relations: { company: true, client: true },
+      });
+    }
+
+    if (user) {
+      if (user.status === UserStatus.BLOCKED) {
+        throw new ForbiddenException('Your account has been blocked');
+      }
+
+      if (!user.googleId) {
+        user.googleId = googleId;
+        await this.usersRepository.save(user);
+      } else if (user.googleId !== googleId) {
+        throw new ConflictException(
+          'This email is already linked to another Google account',
+        );
+      }
+
+      // Ensure client profile exists only for CLIENT accounts
+      if (user.role === Role.CLIENT && !user.client) {
+        await this.clientsRepository.save(
+          this.clientsRepository.create({
+            userId: user.userId,
+            address: null,
+          }),
+        );
+        user = await this.usersRepository.findOne({
+          where: { userId: user.userId },
+          relations: { company: true, client: true },
+        });
+      }
+    } else {
+      const nameParts = (payload.name ?? '').trim().split(/\s+/).filter(Boolean);
+      const firstName =
+        payload.given_name?.trim() || nameParts[0] || email.split('@')[0];
+      const lastName =
+        payload.family_name?.trim() ||
+        (nameParts.length > 1 ? nameParts.slice(1).join(' ') : 'User');
+
+      user = await this.dataSource.transaction(async (manager) => {
+        const usersRepository = manager.getRepository(User);
+        const clientsRepository = manager.getRepository(Client);
+
+        const created = usersRepository.create({
+          firstName,
+          lastName,
+          email,
+          passwordHash: null,
+          googleId,
+          phoneNumber: null,
+          birthDate: null,
+          gender: null,
+          profileImage: payload.picture?.trim() || null,
+          role: Role.CLIENT,
+          status: UserStatus.ACTIVE,
+          twoFactorEnabled: false,
+          twoFactorSecret: null,
+        });
+        const savedUser = await usersRepository.save(created);
+
+        await clientsRepository.save(
+          clientsRepository.create({
+            userId: savedUser.userId,
+            address: null,
+          }),
+        );
+
+        return usersRepository.findOne({
+          where: { userId: savedUser.userId },
+          relations: { company: true, client: true },
+        });
+      });
+    }
+
+    if (!user) {
+      throw new UnauthorizedException('Could not sign in with Google');
+    }
+
+    if (user.twoFactorEnabled && user.twoFactorSecret) {
+      const tempToken = this.jwtService.sign(
+        { sub: user.userId, purpose: '2fa' },
+        { expiresIn: '5m' },
+      );
+      return { requiresTwoFactor: true, tempToken };
+    }
+
+    const auth = this.buildAuthResponse(
+      user,
+      user.company?.verificationStatus ?? null,
+    );
+
+    await this.activityService.log({
+      userId: user.userId,
+      type: ActivityType.LOGIN,
+      title: 'Signed in with Google',
+      message: 'You signed in with Google',
     });
 
     return auth;
@@ -301,6 +470,12 @@ export class AuthService {
     const user = await this.usersRepository.findOne({ where: { userId } });
     if (!user) {
       throw new UnauthorizedException();
+    }
+
+    if (!user.passwordHash) {
+      throw new BadRequestException(
+        'This account uses Google Sign-In and has no password yet. Set one from account settings after adding a password, or continue with Google.',
+      );
     }
 
     const matches = await bcrypt.compare(
@@ -392,6 +567,12 @@ export class AuthService {
     const user = await this.usersRepository.findOne({ where: { userId } });
     if (!user) {
       throw new UnauthorizedException();
+    }
+
+    if (!user.passwordHash) {
+      throw new BadRequestException(
+        'Google accounts without a password cannot disable 2FA this way. Contact support or set a password first.',
+      );
     }
 
     const matches = await bcrypt.compare(dto.password, user.passwordHash);
@@ -509,6 +690,58 @@ export class AuthService {
     );
   }
 
+  async saveCheckoutDetails(
+    userId: string,
+    dto: SaveCheckoutDetailsDto,
+  ): Promise<AuthUserResponse> {
+    const user = await this.loadUserWithRelations(userId);
+
+    if (user.role !== Role.CLIENT && user.role !== Role.ADMIN) {
+      throw new ForbiddenException(
+        'Checkout details can only be saved for client accounts',
+      );
+    }
+
+    if (dto.phoneNumber !== undefined) {
+      user.phoneNumber = dto.phoneNumber.trim() || null;
+      await this.usersRepository.save(user);
+    }
+
+    let client = user.client;
+    if (!client) {
+      client = this.clientsRepository.create({
+        userId: user.userId,
+        address: null,
+        savedCardName: null,
+        savedCardNumber: null,
+        savedCardExpiry: null,
+      });
+    }
+
+    if (dto.address !== undefined) {
+      client.address = dto.address.trim() || null;
+    }
+    if (dto.cardName !== undefined) {
+      client.savedCardName = dto.cardName.trim() || null;
+    }
+    if (dto.cardNumber !== undefined) {
+      // Store digits only for consistent prefills (demo fake payment).
+      const digits = dto.cardNumber.replace(/\D/g, '').slice(0, 19);
+      client.savedCardNumber = digits || null;
+    }
+    if (dto.cardExpiry !== undefined) {
+      client.savedCardExpiry = dto.cardExpiry.trim() || null;
+    }
+
+    await this.clientsRepository.save(client);
+
+    const refreshed = await this.loadUserWithRelations(userId);
+    return this.toAuthUser(
+      refreshed,
+      refreshed.company?.verificationStatus ?? null,
+    );
+  }
+
   private async loadUserWithRelations(userId: string) {
     const user = await this.usersRepository.findOne({
       where: { userId },
@@ -579,6 +812,14 @@ export class AuthService {
         ? new Date(user.createdAt).toISOString()
         : null,
       twoFactorEnabled: Boolean(user.twoFactorEnabled),
+      savedPaymentMethod:
+        user.role === Role.CLIENT
+          ? {
+              cardName: user.client?.savedCardName ?? null,
+              cardNumber: user.client?.savedCardNumber ?? null,
+              cardExpiry: user.client?.savedCardExpiry ?? null,
+            }
+          : null,
       company: user.company
         ? {
             companyId: user.company.companyId,

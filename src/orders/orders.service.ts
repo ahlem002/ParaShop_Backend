@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -14,12 +15,28 @@ import { ActivityType } from '../common/enums/activity-type.enum';
 import { OrderStatus } from '../common/enums/order-status.enum';
 import { VerificationStatus } from '../common/enums/verification-status.enum';
 import { ActivityService } from '../activity/activity.service';
+import { NotificationType } from '../notifications/notification-type.enum';
+import { NotificationsService } from '../notifications/notifications.service';
 import { Product } from '../products/entities/product.entity';
 import { User } from '../users/entities/user.entity';
+import { BuyNowDto } from './dto/buy-now.dto';
 import { CheckoutDto } from './dto/checkout.dto';
+import {
+  COMPANY_UPDATABLE_STATUSES,
+  type CompanyUpdatableStatus,
+} from './dto/update-order-status.dto';
 import { OrderItem } from './entities/order-item.entity';
 import { Order } from './entities/order.entity';
 import { FlouciService } from './flouci.service';
+
+const COMPANY_STATUS_FLOW: Record<
+  CompanyUpdatableStatus,
+  OrderStatus[]
+> = {
+  [OrderStatus.PROCESSING]: [OrderStatus.PAID],
+  [OrderStatus.SHIPPED]: [OrderStatus.PROCESSING],
+  [OrderStatus.DELIVERED]: [OrderStatus.SHIPPED],
+};
 
 @Injectable()
 export class OrdersService {
@@ -42,6 +59,7 @@ export class OrdersService {
     private readonly configService: ConfigService,
     private readonly dataSource: DataSource,
     private readonly activityService: ActivityService,
+    private readonly notificationsService: NotificationsService,
   ) {}
 
   async checkout(userId: string, dto: CheckoutDto) {
@@ -146,25 +164,6 @@ export class OrdersService {
       return savedOrder;
     });
 
-    const frontendUrl =
-      this.configService.get<string>('FRONTEND_URL') ??
-      'http://localhost:5173';
-    const backendUrl =
-      this.configService.get<string>('BACKEND_URL') ??
-      `http://localhost:${this.configService.get('PORT') ?? 3000}`;
-
-    const payment = await this.flouciService.generatePayment({
-      amountMillimes,
-      trackingId,
-      clientLabel: `${user.firstName} ${user.lastName}`.trim() || user.email,
-      successLink: `${frontendUrl}/orders/payment/success?orderId=${order.orderId}`,
-      failLink: `${frontendUrl}/orders/payment/fail?orderId=${order.orderId}`,
-      webhookUrl: `${backendUrl}/api/orders/flouci/webhook`,
-    });
-
-    order.flouciPaymentId = payment.paymentId;
-    await this.ordersRepository.save(order);
-
     await this.activityService.log({
       userId,
       type: ActivityType.CHECKOUT_STARTED,
@@ -179,13 +178,150 @@ export class OrdersService {
       },
     });
 
+    return this.toCheckoutSession(order, company);
+  }
+
+  async buyNow(userId: string, dto: BuyNowDto) {
+    const client = await this.getClientForUser(userId);
+    const product = await this.productsRepository.findOne({
+      where: { productId: dto.productId },
+      relations: { company: true },
+    });
+
+    if (!product) {
+      throw new NotFoundException('Product not found');
+    }
+
+    if (product.verificationStatus !== VerificationStatus.APPROVED) {
+      throw new BadRequestException('Product is not available');
+    }
+
+    if (dto.quantity > product.stock) {
+      throw new BadRequestException(
+        `Not enough stock for "${product.name}" (available: ${product.stock})`,
+      );
+    }
+
+    const company = product.company;
+    if (!company) {
+      throw new NotFoundException('Company not found');
+    }
+
+    const unitPrice = Number(product.price);
+    const subtotal = Number((unitPrice * dto.quantity).toFixed(2));
+    const deliveryFee = Number(company.deliveryFee ?? 0);
+    const total = Number((subtotal + deliveryFee).toFixed(2));
+    const amountMillimes = Math.round(total * 1000);
+
+    if (amountMillimes < 100) {
+      throw new BadRequestException('Order total is too low for payment');
+    }
+
+    const trackingId = `ps_${randomUUID().replace(/-/g, '')}`;
+    const notes = dto.notes?.trim();
+    const shippingAddress = notes
+      ? `${dto.shippingAddress.trim()}\n\nNotes: ${notes}`
+      : dto.shippingAddress.trim();
+    const shippingPhone = dto.phoneNumber.trim();
+
+    const order = await this.dataSource.transaction(async (manager) => {
+      const orderRepo = manager.getRepository(Order);
+      const itemRepo = manager.getRepository(OrderItem);
+
+      const created = orderRepo.create({
+        clientId: client.clientId,
+        companyId: company.companyId,
+        status: OrderStatus.PENDING_PAYMENT,
+        subtotal,
+        deliveryFee,
+        total,
+        amountMillimes,
+        flouciPaymentId: null,
+        trackingId,
+        shippingAddress,
+        shippingPhone,
+        paidAt: null,
+      });
+      const savedOrder = await orderRepo.save(created);
+
+      await itemRepo.save(
+        itemRepo.create({
+          orderId: savedOrder.orderId,
+          productId: product.productId,
+          productName: product.name,
+          productImage: product.images?.[0] ?? null,
+          unitPrice,
+          quantity: dto.quantity,
+          lineTotal: subtotal,
+        }),
+      );
+
+      return savedOrder;
+    });
+
+    await this.activityService.log({
+      userId,
+      type: ActivityType.CHECKOUT_STARTED,
+      title: 'Checkout started',
+      message: `Started buy-now checkout for "${product.name}" (${total.toFixed(2)} TND)`,
+      metadata: {
+        orderId: order.orderId,
+        companyId: company.companyId,
+        companyName: company.companyName,
+        productId: product.productId,
+        total,
+        quantity: dto.quantity,
+      },
+    });
+
+    return this.toCheckoutSession(order, company);
+  }
+
+  async confirmFakePayment(userId: string, orderId: string) {
+    const client = await this.getClientForUser(userId);
+    const order = await this.ordersRepository.findOne({
+      where: { orderId, clientId: client.clientId },
+      relations: { items: { product: true }, company: true },
+    });
+
+    if (!order) {
+      throw new NotFoundException('Order not found');
+    }
+
+    if (order.status === OrderStatus.PAID) {
+      return this.toOrderView(order);
+    }
+
+    if (order.status !== OrderStatus.PENDING_PAYMENT) {
+      throw new BadRequestException(
+        `Order cannot be paid in status ${order.status}`,
+      );
+    }
+
+    await this.markOrderPaid(order);
+
+    const refreshed = await this.ordersRepository.findOne({
+      where: { orderId: order.orderId },
+      relations: { company: true, items: { product: true } },
+    });
+
+    await this.backfillMissingItemImages(refreshed?.items ?? []);
+
+    return {
+      ...this.toOrderView(refreshed!),
+      paymentVerified: true,
+      paymentStatus: 'SUCCESS',
+    };
+  }
+
+  private toCheckoutSession(order: Order, company: Company) {
     return {
       orderId: order.orderId,
       trackingId: order.trackingId,
-      total: order.total,
+      total: Number(order.total),
       amountMillimes: order.amountMillimes,
-      paymentId: payment.paymentId,
-      paymentUrl: payment.link,
+      paymentId: null as string | null,
+      paymentUrl: null as string | null,
       company: {
         companyId: company.companyId,
         companyName: company.companyName,
@@ -204,6 +340,108 @@ export class OrdersService {
     await this.backfillMissingItemImages(orders.flatMap((o) => o.items ?? []));
 
     return orders.map((order) => this.toOrderView(order));
+  }
+
+  async listCompanyOrders(userId: string) {
+    const company = await this.getCompanyForUser(userId);
+    const orders = await this.ordersRepository.find({
+      where: { companyId: company.companyId },
+      relations: {
+        company: true,
+        items: { product: true },
+        client: { user: true },
+      },
+      order: { createdAt: 'DESC' },
+    });
+
+    await this.backfillMissingItemImages(orders.flatMap((o) => o.items ?? []));
+
+    return orders.map((order) => this.toCompanyOrderView(order));
+  }
+
+  async getCompanyOrder(userId: string, orderId: string) {
+    const company = await this.getCompanyForUser(userId);
+    const order = await this.ordersRepository.findOne({
+      where: { orderId, companyId: company.companyId },
+      relations: {
+        company: true,
+        items: { product: true },
+        client: { user: true },
+      },
+    });
+
+    if (!order) {
+      throw new NotFoundException('Order not found');
+    }
+
+    await this.backfillMissingItemImages(order.items ?? []);
+
+    return this.toCompanyOrderView(order);
+  }
+
+  async updateCompanyOrderStatus(
+    userId: string,
+    orderId: string,
+    nextStatus: CompanyUpdatableStatus,
+  ) {
+    if (!COMPANY_UPDATABLE_STATUSES.includes(nextStatus)) {
+      throw new BadRequestException(
+        `Invalid status. Allowed: ${COMPANY_UPDATABLE_STATUSES.join(', ')}`,
+      );
+    }
+
+    const company = await this.getCompanyForUser(userId);
+    const order = await this.ordersRepository.findOne({
+      where: { orderId, companyId: company.companyId },
+      relations: {
+        company: true,
+        items: { product: true },
+        client: { user: true },
+      },
+    });
+
+    if (!order) {
+      throw new NotFoundException('Order not found');
+    }
+
+    const allowedFrom = COMPANY_STATUS_FLOW[nextStatus];
+    if (!allowedFrom.includes(order.status)) {
+      throw new BadRequestException(
+        `Cannot move order from ${order.status} to ${nextStatus}`,
+      );
+    }
+
+    order.status = nextStatus;
+    await this.ordersRepository.save(order);
+
+    await this.activityService.log({
+      userId,
+      type: ActivityType.ORDER_STATUS_UPDATED,
+      title: 'Order status updated',
+      message: `Order ${order.orderId.slice(0, 8)}… → ${nextStatus}`,
+      metadata: {
+        orderId: order.orderId,
+        status: nextStatus,
+        total: Number(order.total),
+      },
+    });
+
+    const clientUserId = order.client?.userId ?? order.client?.user?.userId;
+    if (clientUserId) {
+      const statusLabel = this.statusLabel(nextStatus);
+      void this.notificationsService.createForUser({
+        userId: clientUserId,
+        type: NotificationType.ORDER_UPDATED,
+        title: 'Order update',
+        message: `Your order from ${company.companyName} is now ${statusLabel}.`,
+        link: '/orders',
+        relatedId: order.orderId,
+      });
+    }
+
+    await this.backfillMissingItemImages(order.items ?? []);
+
+    return this.toCompanyOrderView(order);
   }
 
   async getMyOrder(userId: string, orderId: string) {
@@ -557,6 +795,20 @@ export class OrdersService {
         total: Number(order.total),
       },
     });
+
+    const company = await this.companiesRepository.findOne({
+      where: { companyId: order.companyId },
+    });
+    if (company?.userId) {
+      void this.notificationsService.createForUser({
+        userId: company.userId,
+        type: NotificationType.NEW_ORDER,
+        title: 'New paid order',
+        message: `You received a new order for ${Number(order.total).toFixed(2)} TND.`,
+        link: '/company/orders',
+        relatedId: order.orderId,
+      });
+    }
   }
 
   private async getClientForUser(userId: string) {
@@ -567,6 +819,37 @@ export class OrdersService {
       throw new NotFoundException('Client account not found');
     }
     return client;
+  }
+
+  private async getCompanyForUser(userId: string) {
+    const company = await this.companiesRepository.findOne({
+      where: { userId },
+    });
+    if (!company) {
+      throw new ForbiddenException('Company account not found');
+    }
+    return company;
+  }
+
+  private statusLabel(status: OrderStatus) {
+    switch (status) {
+      case OrderStatus.PENDING_PAYMENT:
+        return 'pending payment';
+      case OrderStatus.PAID:
+        return 'paid';
+      case OrderStatus.PAYMENT_FAILED:
+        return 'payment failed';
+      case OrderStatus.CANCELLED:
+        return 'cancelled';
+      case OrderStatus.PROCESSING:
+        return 'processing';
+      case OrderStatus.SHIPPED:
+        return 'shipped';
+      case OrderStatus.DELIVERED:
+        return 'delivered';
+      default:
+        return status;
+    }
   }
 
   private toOrderView(order: Order) {
@@ -598,5 +881,35 @@ export class OrdersService {
         lineTotal: Number(item.lineTotal),
       })),
     };
+  }
+
+  private toCompanyOrderView(order: Order) {
+    const base = this.toOrderView(order);
+    const user = order.client?.user;
+    return {
+      ...base,
+      client: user
+        ? {
+            clientId: order.client.clientId,
+            firstName: user.firstName,
+            lastName: user.lastName,
+            email: user.email,
+            phoneNumber: user.phoneNumber ?? null,
+          }
+        : {
+            clientId: order.clientId,
+            firstName: 'Client',
+            lastName: '',
+            email: '',
+            phoneNumber: null as string | null,
+          },
+      nextStatuses: this.nextStatusesFor(order.status),
+    };
+  }
+
+  private nextStatusesFor(status: OrderStatus): CompanyUpdatableStatus[] {
+    return COMPANY_UPDATABLE_STATUSES.filter((target) =>
+      COMPANY_STATUS_FLOW[target].includes(status),
+    );
   }
 }
