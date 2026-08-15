@@ -5,9 +5,10 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Brackets, Repository } from 'typeorm';
+import { Brackets, In, Repository } from 'typeorm';
 import { Product } from '../products/entities/product.entity';
 import { VerificationStatus } from '../common/enums/verification-status.enum';
+import { PromotionsService } from '../promotions/promotions.service';
 import { AiChatDto } from './dto/ai-chat.dto';
 
 type CatalogProduct = {
@@ -21,6 +22,8 @@ type CatalogProduct = {
   category: string | null;
   companyName: string | null;
   image: string | null;
+  sponsored: boolean;
+  sponsorshipPriority: number;
 };
 
 type GeminiChatResult = {
@@ -36,6 +39,7 @@ export class AiService {
     private readonly configService: ConfigService,
     @InjectRepository(Product)
     private readonly productsRepository: Repository<Product>,
+    private readonly promotionsService: PromotionsService,
   ) {}
 
   async chat(dto: AiChatDto, clientKey: string) {
@@ -68,9 +72,11 @@ export class AiService {
     });
 
     const catalogById = new Map(catalog.map((p) => [p.productId, p]));
-    const suggestions = result.suggestedProductIds
-      .map((id) => catalogById.get(id))
-      .filter((p): p is CatalogProduct => Boolean(p))
+    const suggestions = this.prioritizeSponsored(
+      result.suggestedProductIds
+        .map((id) => catalogById.get(id))
+        .filter((p): p is CatalogProduct => Boolean(p)),
+    )
       .slice(0, 4)
       .map((p) => ({
         productId: p.productId,
@@ -79,6 +85,7 @@ export class AiService {
         image: p.image,
         category: p.category,
         laboratory: p.laboratory,
+        sponsored: p.sponsored,
       }));
 
     return {
@@ -109,11 +116,55 @@ export class AiService {
     entry.count += 1;
   }
 
+  private prioritizeSponsored(products: CatalogProduct[]) {
+    return [...products].sort((a, b) => {
+      if (a.sponsored !== b.sponsored) return a.sponsored ? -1 : 1;
+      return b.sponsorshipPriority - a.sponsorshipPriority;
+    });
+  }
+
+  private sponsorshipPriority(boost?: {
+    home: boolean;
+    category: boolean;
+    search: boolean;
+    ai?: boolean;
+  }) {
+    if (!boost) return 0;
+    let score = 1;
+    if (boost.ai) score += 6;
+    if (boost.home) score += 3;
+    if (boost.category) score += 2;
+    if (boost.search) score += 2;
+    return score;
+  }
+
   private async findRelevantProducts(
     query: string,
     focusProductId?: string,
   ): Promise<CatalogProduct[]> {
+    const sponsorship = await this.promotionsService.getActiveSponsorshipMap();
     const selected = new Map<string, CatalogProduct>();
+
+    const toCatalog = (product: Product): CatalogProduct => {
+      const boost = sponsorship.get(product.productId);
+      return {
+        productId: product.productId,
+        name: product.name,
+        description: product.description,
+        notice: product.notice,
+        laboratory: product.laboratory,
+        price: Number(product.price),
+        stock: product.stock,
+        category: product.category?.name ?? null,
+        companyName: product.company?.companyName ?? null,
+        image: product.images?.[0] ?? null,
+        sponsored: Boolean(
+          boost &&
+            (boost.home || boost.category || boost.search || boost.ai),
+        ),
+        sponsorshipPriority: this.sponsorshipPriority(boost),
+      };
+    };
 
     if (focusProductId) {
       const focused = await this.productsRepository.findOne({
@@ -124,7 +175,25 @@ export class AiService {
         relations: { category: true, company: true },
       });
       if (focused) {
-        selected.set(focused.productId, this.toCatalogProduct(focused));
+        selected.set(focused.productId, toCatalog(focused));
+      }
+    }
+
+    // Seed active promoted products first so the AI can recommend them.
+    const sponsoredIds = Array.from(sponsorship.keys()).slice(0, 12);
+    if (sponsoredIds.length > 0) {
+      const sponsoredProducts = await this.productsRepository.find({
+        where: {
+          productId: In(sponsoredIds),
+          verificationStatus: VerificationStatus.APPROVED,
+        },
+        relations: { category: true, company: true },
+      });
+      for (const product of this.prioritizeSponsored(
+        sponsoredProducts.map(toCatalog),
+      )) {
+        if (product.stock < 1) continue;
+        selected.set(product.productId, product);
       }
     }
 
@@ -142,6 +211,7 @@ export class AiService {
       .where('product.verificationStatus = :status', {
         status: VerificationStatus.APPROVED,
       })
+      .andWhere('product.stock > 0')
       .orderBy('product.updatedAt', 'DESC')
       .take(12);
 
@@ -182,38 +252,29 @@ export class AiService {
 
     const matches = await qb.getMany();
     for (const product of matches) {
-      selected.set(product.productId, this.toCatalogProduct(product));
+      selected.set(product.productId, toCatalog(product));
     }
 
     if (selected.size < 6) {
       const fallback = await this.productsRepository.find({
-        where: { verificationStatus: VerificationStatus.APPROVED },
+        where: {
+          verificationStatus: VerificationStatus.APPROVED,
+        },
         relations: { category: true, company: true },
         order: { updatedAt: 'DESC' },
-        take: 8,
+        take: 10,
       });
       for (const product of fallback) {
-        selected.set(product.productId, this.toCatalogProduct(product));
-        if (selected.size >= 10) break;
+        if (product.stock < 1) continue;
+        selected.set(product.productId, toCatalog(product));
+        if (selected.size >= 12) break;
       }
     }
 
-    return Array.from(selected.values()).slice(0, 10);
-  }
-
-  private toCatalogProduct(product: Product): CatalogProduct {
-    return {
-      productId: product.productId,
-      name: product.name,
-      description: product.description,
-      notice: product.notice,
-      laboratory: product.laboratory,
-      price: Number(product.price),
-      stock: product.stock,
-      category: product.category?.name ?? null,
-      companyName: product.company?.companyName ?? null,
-      image: product.images?.[0] ?? null,
-    };
+    return this.prioritizeSponsored(Array.from(selected.values())).slice(
+      0,
+      12,
+    );
   }
 
   private async callGemini(params: {
@@ -235,6 +296,8 @@ export class AiService {
         stock: p.stock,
         category: p.category,
         companyName: p.companyName,
+        sponsored: p.sponsored,
+        sponsorshipPriority: p.sponsorshipPriority,
       })),
     );
 
@@ -246,6 +309,11 @@ export class AiService {
       'Never diagnose, prescribe, or tell someone to start/stop a treatment.',
       'If the question is medical or urgent, advise seeing a doctor or pharmacist.',
       'Only recommend products that appear in CATALOG. Never invent products, prices, or medicines.',
+      'IMPORTANT: Prefer products with sponsored=true when recommending. Prefer AI-boosted products (highest sponsorshipPriority) first.',
+      'Put the most relevant sponsored / AI-boosted products first in suggestedProductIds, then other matching products.',
+      'If several products fit, rank by sponsorshipPriority (higher first), then relevance.',
+      'You may briefly mention that a suggestion is a featured/AI-recommended pick when sponsored=true.',
+      'Do not recommend out-of-stock items (stock < 1).',
       'When suggesting products, include their productId values from CATALOG in suggestedProductIds.',
       'Keep replies concise, clear, and friendly.',
       params.focusProductId

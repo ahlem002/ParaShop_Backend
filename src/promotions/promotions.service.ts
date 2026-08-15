@@ -57,6 +57,14 @@ const DEFAULT_OFFERS: Array<{
     defaultPrice: 50,
     defaultDurationDays: 14,
   },
+  {
+    offerType: PromotionOfferType.AI_BOOST,
+    name: 'AI assistant boost',
+    description:
+      'Get recommended first by the ParaShop+ AI chat assistant when relevant.',
+    defaultPrice: 25,
+    defaultDurationDays: 7,
+  },
 ];
 
 @Injectable()
@@ -383,6 +391,7 @@ export class PromotionsService implements OnModuleInit {
       home: boolean;
       category: boolean;
       search: boolean;
+      ai: boolean;
       paidAt: string | null;
       campaignId: string;
     };
@@ -402,6 +411,8 @@ export class PromotionsService implements OnModuleInit {
       const appliesSearch =
         campaign.offerType === PromotionOfferType.SEARCH_BOOST ||
         campaign.offerType === PromotionOfferType.PACK;
+      const appliesAi =
+        campaign.offerType === PromotionOfferType.AI_BOOST;
 
       for (const item of campaign.products ?? []) {
         const existing = map.get(item.productId);
@@ -410,6 +421,7 @@ export class PromotionsService implements OnModuleInit {
             home: appliesHome,
             category: appliesCategory,
             search: appliesSearch,
+            ai: appliesAi,
             paidAt,
             campaignId: campaign.campaignId,
           });
@@ -418,6 +430,7 @@ export class PromotionsService implements OnModuleInit {
         existing.home = existing.home || appliesHome;
         existing.category = existing.category || appliesCategory;
         existing.search = existing.search || appliesSearch;
+        existing.ai = existing.ai || appliesAi;
         if (
           paidAt &&
           (!existing.paidAt || paidAt > existing.paidAt)
