@@ -25,6 +25,7 @@ import type { JwtPayload } from '../auth/interfaces/jwt-payload.interface';
 import { ProductsService } from './products.service';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
+import { UpdateProductStockDto } from './dto/update-product-stock.dto';
 
 const productsDir = join(process.cwd(), 'uploads', 'products');
 
@@ -91,6 +92,15 @@ export class ProductsController {
     );
 
     return this.productsService.create(user.sub, dto, imagePaths);
+  }
+
+  @Patch(':productId/stock')
+  updateStock(
+    @Param('productId') productId: string,
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: UpdateProductStockDto,
+  ) {
+    return this.productsService.updateStock(productId, user.sub, dto.stock);
   }
 
   @Patch(':productId')

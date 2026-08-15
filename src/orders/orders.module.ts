@@ -8,6 +8,7 @@ import { User } from '../users/entities/user.entity';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { ActivityModule } from '../activity/activity.module';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { ProductsModule } from '../products/products.module';
 import { CompanyOrdersController } from './company-orders.controller';
 import { DeliveryOrdersController } from './delivery-orders.controller';
 import { DeliveryRating } from './entities/delivery-rating.entity';
@@ -31,6 +32,7 @@ import { OrdersService } from './orders.service';
     ]),
     ActivityModule,
     NotificationsModule,
+    ProductsModule,
   ],
   controllers: [
     OrdersController,

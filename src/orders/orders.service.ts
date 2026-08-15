@@ -32,6 +32,7 @@ import { Order } from './entities/order.entity';
 import { FlouciService } from './flouci.service';
 import { Role } from '../common/enums/role.enum';
 import { UserStatus } from '../common/enums/user-status.enum';
+import { ProductsService } from '../products/products.service';
 
 const COMPANY_STATUS_FLOW: Record<
   CompanyUpdatableStatus,
@@ -64,6 +65,7 @@ export class OrdersService {
     private readonly dataSource: DataSource,
     private readonly activityService: ActivityService,
     private readonly notificationsService: NotificationsService,
+    private readonly productsService: ProductsService,
   ) {}
 
   async checkout(userId: string, dto: CheckoutDto) {
@@ -927,6 +929,12 @@ export class OrdersService {
       order.status === OrderStatus.PAID ||
       order.status === OrderStatus.PROCESSING;
 
+    const stockChanges: Array<{
+      productId: string;
+      previousStock: number;
+      newStock: number;
+    }> = [];
+
     await this.dataSource.transaction(async (manager) => {
       const orderRepo = manager.getRepository(Order);
       const productRepo = manager.getRepository(Product);
@@ -957,14 +965,27 @@ export class OrdersService {
             where: { productId: line.productId },
           });
           if (!product) continue;
-          product.stock += line.quantity;
+          const previousStock = Number(product.stock);
+          product.stock = previousStock + line.quantity;
+          if (product.stock > 0) {
+            product.soldOutAt = null;
+          }
           await productRepo.save(product);
+          stockChanges.push({
+            productId: product.productId,
+            previousStock,
+            newStock: Number(product.stock),
+          });
         }
       }
 
       locked.status = OrderStatus.CANCELLED;
       await orderRepo.save(locked);
     });
+
+    if (stockChanges.length) {
+      void this.productsService.applyStockChangeEffects(stockChanges);
+    }
 
     const refreshed = await this.ordersRepository.findOne({
       where: { orderId: order.orderId },
@@ -1097,6 +1118,12 @@ export class OrdersService {
 
     let justPaid = false;
 
+    const stockChanges: Array<{
+      productId: string;
+      previousStock: number;
+      newStock: number;
+    }> = [];
+
     await this.dataSource.transaction(async (manager) => {
       const orderRepo = manager.getRepository(Order);
       const productRepo = manager.getRepository(Product);
@@ -1122,8 +1149,17 @@ export class OrdersService {
             `Insufficient stock for "${product.name}" after payment`,
           );
         }
-        product.stock -= line.quantity;
+        const previousStock = Number(product.stock);
+        product.stock = previousStock - line.quantity;
+        if (product.stock === 0 && !product.soldOutAt) {
+          product.soldOutAt = new Date();
+        }
         await productRepo.save(product);
+        stockChanges.push({
+          productId: product.productId,
+          previousStock,
+          newStock: Number(product.stock),
+        });
       }
 
       locked.status = OrderStatus.PAID;
@@ -1144,6 +1180,10 @@ export class OrdersService {
     });
 
     if (!justPaid) return;
+
+    if (stockChanges.length) {
+      void this.productsService.applyStockChangeEffects(stockChanges);
+    }
 
     const client = await this.clientsRepository.findOne({
       where: { clientId: order.clientId },

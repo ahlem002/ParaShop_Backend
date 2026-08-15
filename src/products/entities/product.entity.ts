@@ -31,6 +31,10 @@ export class Product {
   @Column({ type: 'int', default: 0 })
   stock: number;
 
+  /** Set when stock hits 0; cleared when restocked. Used for 10-day auto-delete. */
+  @Column({ type: 'datetime', nullable: true })
+  soldOutAt: Date | null;
+
   @Column({ type: 'text', nullable: true })
   notice: string | null;
 

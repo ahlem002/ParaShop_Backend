@@ -95,6 +95,14 @@ export class CartService {
       throw new NotFoundException('Cart item not found');
     }
 
+    if (dto.quantity < 1) {
+      throw new BadRequestException('Quantity must be at least 1');
+    }
+
+    if (item.product.stock < 1) {
+      throw new BadRequestException('This product is out of stock');
+    }
+
     if (dto.quantity > item.product.stock) {
       throw new BadRequestException(
         `Only ${item.product.stock} unit(s) available in stock`,

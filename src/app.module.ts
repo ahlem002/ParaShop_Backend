@@ -35,10 +35,12 @@ import { FavoritesModule } from './favorites/favorites.module';
 import { CompanyStatsModule } from './company-stats/company-stats.module';
 import { PromotionsModule } from './promotions/promotions.module';
 import { AiModule } from './ai/ai.module';
+import { ScheduleModule } from '@nestjs/schedule';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
+    ScheduleModule.forRoot(),
     TypeOrmModule.forRootAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
