@@ -337,9 +337,9 @@ export class ProductsService {
       const company = await this.companiesRepository.findOne({
         where: { companyId: product.companyId },
       });
-      userId = company?.userId;
+      if (!company?.userId) return;
+      userId = company.userId;
     }
-    if (!userId) return;
 
     return this.notificationsService.createForUser({
       userId,
