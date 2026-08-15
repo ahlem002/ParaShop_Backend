@@ -34,6 +34,7 @@ import { MailModule } from './mail/mail.module';
 import { FavoritesModule } from './favorites/favorites.module';
 import { CompanyStatsModule } from './company-stats/company-stats.module';
 import { PromotionsModule } from './promotions/promotions.module';
+import { AiModule } from './ai/ai.module';
 
 @Module({
   imports: [
@@ -88,6 +89,7 @@ import { PromotionsModule } from './promotions/promotions.module';
     FavoritesModule,
     CompanyStatsModule,
     PromotionsModule,
+    AiModule,
     NotificationsModule,
     MailModule,
   ],
